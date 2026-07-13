@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect } from "react";
 import "./globals.css";
+
+import { useEffect } from "react";
 import bootBrain from "../core/index";
 
 export default function RootLayout({

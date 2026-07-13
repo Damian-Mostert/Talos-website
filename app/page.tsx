@@ -1102,203 +1102,207 @@ export default function TalosChatPage() {
   }, []);
 
   return (
-    <>
-      <div id="panel">
-        <div id="avatar-wrap" aria-label="Live pet state avatar">
-          <div id="rainbow-ring"></div>
-          <div id="glow"></div>
-          <svg id="constellation" viewBox="0 0 224 224" xmlns="http://www.w3.org/2000/svg">
-            <line x1="20" y1="40" x2="55" y2="15" stroke="#8fb8e0" strokeWidth="1" />
-            <line x1="204" y1="35" x2="170" y2="12" stroke="#8fb8e0" strokeWidth="1" />
-            <line x1="10" y1="130" x2="30" y2="170" stroke="#8fb8e0" strokeWidth="1" />
-            <line x1="214" y1="125" x2="196" y2="168" stroke="#8fb8e0" strokeWidth="1" />
-            <line x1="70" y1="8" x2="112" y2="2" stroke="#8fb8e0" strokeWidth="1" />
-            <line x1="112" y1="2" x2="154" y2="8" stroke="#8fb8e0" strokeWidth="1" />
-            <circle cx="20" cy="40" r="2" fill="#8fb8e0" />
-            <circle cx="55" cy="15" r="1.6" fill="#8fb8e0" />
-            <circle cx="204" cy="35" r="2" fill="#8fb8e0" />
-            <circle cx="170" cy="12" r="1.6" fill="#8fb8e0" />
-            <circle cx="10" cy="130" r="1.6" fill="#8fb8e0" />
-            <circle cx="30" cy="170" r="2" fill="#8fb8e0" />
-            <circle cx="214" cy="125" r="1.6" fill="#8fb8e0" />
-            <circle cx="196" cy="168" r="2" fill="#8fb8e0" />
-            <circle cx="70" cy="8" r="1.6" fill="#8fb8e0" />
-            <circle cx="112" cy="2" r="2" fill="#8fb8e0" />
-            <circle cx="154" cy="8" r="1.6" fill="#8fb8e0" />
-          </svg>
+    <div className='flex flex-row overflow-y-auto overflow-x-none w-screen h-screen'>
+      <div className='min-w-screen min-h-screen lg:min-w-1 lg:w-full flex flex-row-reverse overflow-y-auto lg:overflow-y-visible'>
+          <div id="chat-col" className='min-w-screen min-h-screen lg:min-w-1 lg:w-full h-full' >
+            <canvas id="neural-canvas"></canvas>
+            <div id="neural-scrim"></div>
 
-          <svg id="avatar" viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg">
-            <defs>
-              <radialGradient id="faceGrad" cx="45%" cy="40%" r="60%">
-                <stop id="face-stop-1" offset="0%" stopColor="#201830" />
-                <stop id="face-stop-2" offset="100%" stopColor="#0c0714" />
-              </radialGradient>
-              <filter id="glow-filter" x="-30%" y="-30%" width="160%" height="160%">
-                <feGaussianBlur stdDeviation="3" result="blur" />
-                <feMerge>
-                  <feMergeNode in="blur" />
-                  <feMergeNode in="SourceGraphic" />
-                </feMerge>
-              </filter>
-            </defs>
+            <header>
+              <div id="header-left">
+                <div id="pulse-dot"></div>
+                Talos
+              </div>
+              <button id="theme-toggle" type="button" aria-label="Toggle light and dark mode" onClick={() => toggleThemeRef.current()}>
+                <svg id="icon-moon" viewBox="0 0 24 24" fill="none" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
+                </svg>
+                <svg id="icon-sun" viewBox="0 0 24 24" fill="none" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="12" cy="12" r="4"></circle>
+                  <line x1="12" y1="1" x2="12" y2="3"></line>
+                  <line x1="12" y1="21" x2="12" y2="23"></line>
+                  <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line>
+                  <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line>
+                  <line x1="1" y1="12" x2="3" y2="12"></line>
+                  <line x1="21" y1="12" x2="23" y2="12"></line>
+                  <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line>
+                  <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line>
+                </svg>
+              </button>
+            </header>
 
-            <circle id="head" cx="100" cy="100" r="78" fill="url(#faceGrad)" stroke="#2c2244" strokeWidth="2" />
-
-            <circle id="iris-l-outer" cx="72" cy="92" r="19" fill="none" stroke="#8fb8e0" strokeWidth="1.2" opacity={0.3} />
-            <circle id="iris-r-outer" cx="128" cy="92" r="19" fill="none" stroke="#8fb8e0" strokeWidth="1.2" opacity={0.3} />
-
-            <ellipse id="eye-l" cx="72" cy="92" rx="16.5" ry="16.5" fill="#160f22" />
-            <ellipse id="eye-r" cx="128" cy="92" rx="16.5" ry="16.5" fill="#160f22" />
-
-            <circle id="pupil-l" cx="72" cy="92" r="8.5" fill="#8fb8e0" filter="url(#glow-filter)" />
-            <circle id="pupil-r" cx="128" cy="92" r="8.5" fill="#8fb8e0" filter="url(#glow-filter)" />
-
-            <circle cx="76" cy="87" r="3.2" fill="white" opacity={0.75} />
-            <circle cx="132" cy="87" r="3.2" fill="white" opacity={0.75} />
-            <circle cx="68" cy="97" r="1.4" fill="white" opacity={0.55} />
-            <circle cx="124" cy="97" r="1.4" fill="white" opacity={0.55} />
-
-            <path id="brow-l" d="M 55 66 Q 72 58 89 66" stroke="#8fb8e0" strokeWidth="3.4" fill="none" strokeLinecap="round" opacity={0.75} />
-            <path id="brow-r" d="M 111 66 Q 128 58 145 66" stroke="#8fb8e0" strokeWidth="3.4" fill="none" strokeLinecap="round" opacity={0.75} />
-
-            <path id="mouth" d="M 82 130 Q 100 141 118 130" stroke="#8fb8e0" strokeWidth="3.2" fill="none" strokeLinecap="round" opacity={0.85} />
-            <ellipse id="mouth-open" cx="100" cy="132" rx="9" ry="5" fill="#0b0710" stroke="#8fb8e0" strokeWidth="2" opacity={0} />
-
-            <ellipse id="blush-l" cx="56" cy="114" rx="13" ry="7.5" fill="#f2a6c9" opacity={0.22} />
-            <ellipse id="blush-r" cx="144" cy="114" rx="13" ry="7.5" fill="#f2a6c9" opacity={0.22} />
-
-            <line id="scan" x1="22" y1="100" x2="178" y2="100" stroke="#8fb8e0" strokeWidth="1" opacity={0} strokeDasharray="4 6" />
-          </svg>
-
-          <div id="sparkle-field">
-            <span className="twinkle" style={{ top: '4%', left: '80%' }}>
-              &#10022;
-            </span>
-            <span className="twinkle" style={{ top: '86%', left: '8%' }}>
-              &#10022;
-            </span>
-            <span className="twinkle" style={{ top: '80%', left: '88%' }}>
-              &#10023;
-            </span>
-            <span className="twinkle" style={{ top: '0%', left: '12%' }}>
-              &#10023;
-            </span>
-            <span className="twinkle" style={{ top: '46%', left: '-4%' }}>
-              &#10084;
-            </span>
-          </div>
-        </div>
-
-        <div id="mood-label">Initialising</div>
-
-        <div className="eyebrow">signal</div>
-
-        <div id="neural">
-          <div className="bar-row">
-            <span className="bar-label">Valence</span>
-            <div className="bar-track">
-              <div className="bar-fill" id="bar-valence" style={{ width: '50%', background: '#c9a6ff' }}></div>
+            <div id="log">
+              <div className="msg system">Connecting to neural substrate…</div>
             </div>
-            <span className="bar-val" id="val-valence">
-              0.00
-            </span>
-          </div>
-          <div className="bar-row">
-            <span className="bar-label">Arousal</span>
-            <div className="bar-track">
-              <div className="bar-fill" id="bar-arousal" style={{ width: '0%', background: '#7ee8c1' }}></div>
-            </div>
-            <span className="bar-val" id="val-arousal">
-              0.00
-            </span>
-          </div>
-          <div className="bar-row">
-            <span className="bar-label">Drive</span>
-            <div className="bar-track">
-              <div className="bar-fill" id="bar-drive" style={{ width: '0%', background: '#ffb86b' }}></div>
-            </div>
-            <span className="bar-val" id="val-drive">
-              0.00
-            </span>
-          </div>
-          <div className="bar-row">
-            <span className="bar-label">Alertness</span>
-            <div className="bar-track">
-              <div className="bar-fill" id="bar-ne" style={{ width: '0%', background: '#ff8a65' }}></div>
-            </div>
-            <span className="bar-val" id="val-ne">
-              0.00
-            </span>
-          </div>
-        </div>
 
-        <div className="eyebrow" style={{ marginTop: '2px' }}>
-          regions
-        </div>
-        <div id="region-legend"></div>
+            <footer>
+              <div className="input-wrap">
+                <textarea id="input" placeholder="Say something…" rows={1}></textarea>
+              </div>
+              <button id="send-btn" onClick={() => sendRef.current()} aria-label="Send message">
+                <svg viewBox="0 0 24 24" fill="none" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <line x1="22" y1="2" x2="11" y2="13"></line>
+                  <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+                </svg>
+              </button>
+            </footer>
+          </div>
+          <div className='min-w-screen min-h-screen lg:min-w-[300px] flex'>
+            <div id="panel" className='w-full h-full' >
+              <div id="avatar-wrap" aria-label="Live pet state avatar">
+                <div id="rainbow-ring"></div>
+                <div id="glow"></div>
+                <svg id="constellation" viewBox="0 0 224 224" xmlns="http://www.w3.org/2000/svg">
+                  <line x1="20" y1="40" x2="55" y2="15" stroke="#8fb8e0" strokeWidth="1" />
+                  <line x1="204" y1="35" x2="170" y2="12" stroke="#8fb8e0" strokeWidth="1" />
+                  <line x1="10" y1="130" x2="30" y2="170" stroke="#8fb8e0" strokeWidth="1" />
+                  <line x1="214" y1="125" x2="196" y2="168" stroke="#8fb8e0" strokeWidth="1" />
+                  <line x1="70" y1="8" x2="112" y2="2" stroke="#8fb8e0" strokeWidth="1" />
+                  <line x1="112" y1="2" x2="154" y2="8" stroke="#8fb8e0" strokeWidth="1" />
+                  <circle cx="20" cy="40" r="2" fill="#8fb8e0" />
+                  <circle cx="55" cy="15" r="1.6" fill="#8fb8e0" />
+                  <circle cx="204" cy="35" r="2" fill="#8fb8e0" />
+                  <circle cx="170" cy="12" r="1.6" fill="#8fb8e0" />
+                  <circle cx="10" cy="130" r="1.6" fill="#8fb8e0" />
+                  <circle cx="30" cy="170" r="2" fill="#8fb8e0" />
+                  <circle cx="214" cy="125" r="1.6" fill="#8fb8e0" />
+                  <circle cx="196" cy="168" r="2" fill="#8fb8e0" />
+                  <circle cx="70" cy="8" r="1.6" fill="#8fb8e0" />
+                  <circle cx="112" cy="2" r="2" fill="#8fb8e0" />
+                  <circle cx="154" cy="8" r="1.6" fill="#8fb8e0" />
+                </svg>
 
-        <div className="eyebrow" style={{ marginTop: '2px' }}>
-          inner monologue
-        </div>
-        <div id="monologue-wrap">
-          <div id="monologue"></div>
-        </div>
+                <svg id="avatar" viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg">
+                  <defs>
+                    <radialGradient id="faceGrad" cx="45%" cy="40%" r="60%">
+                      <stop id="face-stop-1" offset="0%" stopColor="#201830" />
+                      <stop id="face-stop-2" offset="100%" stopColor="#0c0714" />
+                    </radialGradient>
+                    <filter id="glow-filter" x="-30%" y="-30%" width="160%" height="160%">
+                      <feGaussianBlur stdDeviation="3" result="blur" />
+                      <feMerge>
+                        <feMergeNode in="blur" />
+                        <feMergeNode in="SourceGraphic" />
+                      </feMerge>
+                    </filter>
+                  </defs>
 
-        <div id="status-row">
-          <div id="conn"></div>
-          <span id="status-text">Connecting…</span>
-          <div id="thinking-dot" style={{ marginLeft: 'auto' }}></div>
-          <span id="thinking-label">processing</span>
+                  <circle id="head" cx="100" cy="100" r="78" fill="url(#faceGrad)" stroke="#2c2244" strokeWidth="2" />
+
+                  <circle id="iris-l-outer" cx="72" cy="92" r="19" fill="none" stroke="#8fb8e0" strokeWidth="1.2" opacity={0.3} />
+                  <circle id="iris-r-outer" cx="128" cy="92" r="19" fill="none" stroke="#8fb8e0" strokeWidth="1.2" opacity={0.3} />
+
+                  <ellipse id="eye-l" cx="72" cy="92" rx="16.5" ry="16.5" fill="#160f22" />
+                  <ellipse id="eye-r" cx="128" cy="92" rx="16.5" ry="16.5" fill="#160f22" />
+
+                  <circle id="pupil-l" cx="72" cy="92" r="8.5" fill="#8fb8e0" filter="url(#glow-filter)" />
+                  <circle id="pupil-r" cx="128" cy="92" r="8.5" fill="#8fb8e0" filter="url(#glow-filter)" />
+
+                  <circle cx="76" cy="87" r="3.2" fill="white" opacity={0.75} />
+                  <circle cx="132" cy="87" r="3.2" fill="white" opacity={0.75} />
+                  <circle cx="68" cy="97" r="1.4" fill="white" opacity={0.55} />
+                  <circle cx="124" cy="97" r="1.4" fill="white" opacity={0.55} />
+
+                  <path id="brow-l" d="M 55 66 Q 72 58 89 66" stroke="#8fb8e0" strokeWidth="3.4" fill="none" strokeLinecap="round" opacity={0.75} />
+                  <path id="brow-r" d="M 111 66 Q 128 58 145 66" stroke="#8fb8e0" strokeWidth="3.4" fill="none" strokeLinecap="round" opacity={0.75} />
+
+                  <path id="mouth" d="M 82 130 Q 100 141 118 130" stroke="#8fb8e0" strokeWidth="3.2" fill="none" strokeLinecap="round" opacity={0.85} />
+                  <ellipse id="mouth-open" cx="100" cy="132" rx="9" ry="5" fill="#0b0710" stroke="#8fb8e0" strokeWidth="2" opacity={0} />
+
+                  <ellipse id="blush-l" cx="56" cy="114" rx="13" ry="7.5" fill="#f2a6c9" opacity={0.22} />
+                  <ellipse id="blush-r" cx="144" cy="114" rx="13" ry="7.5" fill="#f2a6c9" opacity={0.22} />
+
+                  <line id="scan" x1="22" y1="100" x2="178" y2="100" stroke="#8fb8e0" strokeWidth="1" opacity={0} strokeDasharray="4 6" />
+                </svg>
+
+                <div id="sparkle-field">
+                  <span className="twinkle" style={{ top: '4%', left: '80%' }}>
+                    &#10022;
+                  </span>
+                  <span className="twinkle" style={{ top: '86%', left: '8%' }}>
+                    &#10022;
+                  </span>
+                  <span className="twinkle" style={{ top: '80%', left: '88%' }}>
+                    &#10023;
+                  </span>
+                  <span className="twinkle" style={{ top: '0%', left: '12%' }}>
+                    &#10023;
+                  </span>
+                  <span className="twinkle" style={{ top: '46%', left: '-4%' }}>
+                    &#10084;
+                  </span>
+                </div>
+              </div>
+
+              <div id="mood-label">Initialising</div>
+
+              <div className="eyebrow">signal</div>
+
+              <div id="neural">
+                <div className="bar-row">
+                  <span className="bar-label">Valence</span>
+                  <div className="bar-track">
+                    <div className="bar-fill" id="bar-valence" style={{ width: '50%', background: '#c9a6ff' }}></div>
+                  </div>
+                  <span className="bar-val" id="val-valence">
+                    0.00
+                  </span>
+                </div>
+                <div className="bar-row">
+                  <span className="bar-label">Arousal</span>
+                  <div className="bar-track">
+                    <div className="bar-fill" id="bar-arousal" style={{ width: '0%', background: '#7ee8c1' }}></div>
+                  </div>
+                  <span className="bar-val" id="val-arousal">
+                    0.00
+                  </span>
+                </div>
+                <div className="bar-row">
+                  <span className="bar-label">Drive</span>
+                  <div className="bar-track">
+                    <div className="bar-fill" id="bar-drive" style={{ width: '0%', background: '#ffb86b' }}></div>
+                  </div>
+                  <span className="bar-val" id="val-drive">
+                    0.00
+                  </span>
+                </div>
+                <div className="bar-row">
+                  <span className="bar-label">Alertness</span>
+                  <div className="bar-track">
+                    <div className="bar-fill" id="bar-ne" style={{ width: '0%', background: '#ff8a65' }}></div>
+                  </div>
+                  <span className="bar-val" id="val-ne">
+                    0.00
+                  </span>
+                </div>
+              </div>
+
+              <div className="eyebrow" style={{ marginTop: '2px' }}>
+                regions
+              </div>
+              <div id="region-legend"></div>
+
+              <div className="eyebrow" style={{ marginTop: '2px' }}>
+                inner monologue
+              </div>
+              <div id="monologue-wrap">
+                <div id="monologue"></div>
+              </div>
+
+              <div id="status-row">
+                <div id="conn"></div>
+                <span id="status-text">Connecting…</span>
+                <div id="thinking-dot" style={{ marginLeft: 'auto' }}></div>
+                <span id="thinking-label">processing</span>
+              </div>
+            </div>
+          </div>
+      </div>
+      <div className='min-w-screen min-h-screen lg:min-w-1 lg:w-2/5 flex relative'>
+        <div id="world-col" className='w-full h-full' style={{ borderLeft: '1px solid var(--border)', background: 'var(--surface)', display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
+          <TalosWorldPage/>
         </div>
       </div>
-
-      <div id="chat-col">
-        <canvas id="neural-canvas"></canvas>
-        <div id="neural-scrim"></div>
-
-        <header>
-          <div id="header-left">
-            <div id="pulse-dot"></div>
-            Talos
-          </div>
-          <button id="theme-toggle" type="button" aria-label="Toggle light and dark mode" onClick={() => toggleThemeRef.current()}>
-            <svg id="icon-moon" viewBox="0 0 24 24" fill="none" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
-            </svg>
-            <svg id="icon-sun" viewBox="0 0 24 24" fill="none" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <circle cx="12" cy="12" r="4"></circle>
-              <line x1="12" y1="1" x2="12" y2="3"></line>
-              <line x1="12" y1="21" x2="12" y2="23"></line>
-              <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line>
-              <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line>
-              <line x1="1" y1="12" x2="3" y2="12"></line>
-              <line x1="21" y1="12" x2="23" y2="12"></line>
-              <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line>
-              <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line>
-            </svg>
-          </button>
-        </header>
-
-        <div id="log">
-          <div className="msg system">Connecting to neural substrate…</div>
-        </div>
-
-        <footer>
-          <div className="input-wrap">
-            <textarea id="input" placeholder="Say something…" rows={1}></textarea>
-          </div>
-          <button id="send-btn" onClick={() => sendRef.current()} aria-label="Send message">
-            <svg viewBox="0 0 24 24" fill="none" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <line x1="22" y1="2" x2="11" y2="13"></line>
-              <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
-            </svg>
-          </button>
-        </footer>
-      </div>
-
-      <div id="world-col" style={{ borderLeft: '1px solid var(--border)', background: 'var(--surface)', display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
-        <TalosWorldPage/>
-      </div>
-    </>
+    </div>
   );
 }
