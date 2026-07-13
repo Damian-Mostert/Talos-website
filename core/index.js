@@ -4,41 +4,40 @@ import { Consciousness } from './consciousness.js';
 import { getWebUI }      from './web-server';
 import { saveSnapshot, loadSnapshot, saveState, loadState } from './snapshot.js';
 
-const brain = new Brain();
-brain.start(2000);
+export default function bootBrain(){
+    const brain = new Brain();
+    brain.start(1000);
 
-let consciousness;
+    let consciousness;
 
-const ui = getWebUI((text) => {
-    if (consciousness) consciousness.receive(text);
-    else ui.log('Still booting, hold on...');
-});
-
-ui.start(3000);
-
-function launch() {
-    consciousness = new Consciousness(brain, ui);
-    ui.attachBrain(brain);
-
-    process.on('SIGINT', async () => {
-        ui.log('Shutting down...');
-        consciousness.stop();
-        saveSnapshot(brain.engine);
-        saveState(consciousness);
-        brain.stop();
-        process.exit(0);
+    const ui = getWebUI((text) => {
+        if (consciousness) consciousness.receive(text);
+        else ui.log('Still booting, hold on...');
     });
 
-    // Delay ready so the WS client has time to connect before we send the first message
-    setTimeout(() => {
-        ui.ready();
-        consciousness.start();
-    }, 500);
-}
+    ui.start(3000);
 
-ui.log('Neural tissue allocated.');
+    function launch() {
+        consciousness = new Consciousness(brain, ui);
+        ui.attachBrain(brain);
 
-export default function bootBrain(){
+        process.on('SIGINT', async () => {
+            ui.log('Shutting down...');
+            consciousness.stop();
+            saveSnapshot(brain.engine);
+            saveState(consciousness);
+            brain.stop();
+            process.exit(0);
+        });
+
+        // Delay ready so the WS client has time to connect before we send the first message
+        setTimeout(() => {
+            ui.ready();
+            consciousness.start();
+        }, 500);
+    }
+
+    ui.log('Neural tissue allocated.');
     if (loadSnapshot(brain.engine)) {
         ui.log('Snapshot loaded.');
         warmup(brain).then(() => {
