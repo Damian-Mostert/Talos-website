@@ -1072,7 +1072,7 @@ export class Consciousness {
 
     async start() {
         this.running = true;
-        this.ui.log('Consciousness online.');
+        this.ui.log('Conative network online.');
 
         this._bgInterval    = setInterval(() => { if (this.running) this._backgroundLearn(); }, 10000);
         this._decayInterval = setInterval(() => this.cortex.decay(), 120000);
