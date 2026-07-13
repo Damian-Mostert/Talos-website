@@ -12,6 +12,19 @@ import { StateRegulator } from './regulator.js';
 import { VisualCortex } from './vision.js';
 import { runSandbox } from './sandbox.js';
 
+// Small standalone helpers for the loop detector — pure functions, no `this`,
+// so they're trivial to reason about and test independently of the class.
+function _tokenSet(text) {
+    return new Set((text || '').toLowerCase().replace(/[^a-z\s]/g, ' ').split(/\s+/).filter(Boolean));
+}
+function _jaccard(a, b) {
+    if (a.size === 0 && b.size === 0) return 1;
+    let intersection = 0;
+    for (const tok of a) if (b.has(tok)) intersection++;
+    const union = a.size + b.size - intersection;
+    return union === 0 ? 1 : intersection / union;
+}
+
 export class Consciousness {
     constructor(brain, ui) {
         this.brain   = brain;
@@ -430,6 +443,91 @@ export class Consciousness {
         this._learnFromText(auditSummary, entities, 'neutral', 0.2);
         this.wm.hold(auditSummary.slice(0, 200), entities, 'thought', 0.8);
         this.ui.brainThinks(`[audit] ${auditSummary}`);
+    }
+
+    // ── Thought-loop detection & breaking ────────────────────────────────────
+    // Detects when the internal monologue is circling — repeating itself, or
+    // returning to the same goal without ever concluding — and forces a
+    // grounded transition instead of letting introspection recurse forever.
+    //
+    // The detection window is `thinkingAudit.recentThoughts` (already capped
+    // at 12 entries, so it's naturally a bounded sliding window). Goal changes
+    // don't need an explicit reset: each thought record carries the goal it
+    // was made under, so filtering by the *current* goal automatically drops
+    // thoughts from a goal that's since been resolved or swapped out.
+
+    _detectThoughtLoop() {
+        const recent = this.thinkingAudit.recentThoughts.slice(-6);
+        if (recent.length < 4) return null;
+
+        const activeGoal = this._topGoal();
+
+        // Only consider thoughts made under the *current* goal (or, with no
+        // goal, all recent thoughts). This is what makes a legitimate topic
+        // switch clear the window without a separate reset event.
+        const relevant = activeGoal
+            ? recent.filter(t => t.goal === activeGoal.topic)
+            : recent;
+        if (relevant.length < 4) return null;
+
+        // Repetition signal: thoughts are near-duplicates of each other. Uses
+        // average pairwise word-overlap (Jaccard) rather than exact-text
+        // matching, since a looping monologue usually rephrases rather than
+        // repeats verbatim (e.g. "I wonder about X" / "I wonder about X again").
+        const tokenSets = relevant.map(t => _tokenSet(t.text));
+        let simSum = 0, pairs = 0;
+        for (let i = 0; i < tokenSets.length; i++) {
+            for (let j = i + 1; j < tokenSets.length; j++) {
+                simSum += _jaccard(tokenSets[i], tokenSets[j]);
+                pairs++;
+            }
+        }
+        const avgSimilarity = pairs > 0 ? simSum / pairs : 0;
+        const repetitive = avgSimilarity >= 0.55;
+
+        // Stall signal: every recent thought touched the active goal but none concluded.
+        const stalled = !!activeGoal && relevant.every(t => t.touchedGoal && !t.conclusive);
+
+        if (repetitive || stalled) {
+            return { activeGoal, relevant, reason: stalled ? 'stalled' : 'repetitive' };
+        }
+        return null;
+    }
+
+    // Forces a grounded transition: a concrete subgoal, a specific clarifying
+    // question, or a simple observable action — in that preference order,
+    // depending on what context is available. Clears the detection window so
+    // the fallback doesn't immediately re-trigger on the new direction.
+    _breakThoughtLoop(loopInfo) {
+        const { activeGoal, reason } = loopInfo;
+
+        let pivot;
+        if (activeGoal) {
+            pivot = {
+                kind: 'subgoal',
+                text: `Stop circling "${activeGoal.topic}" in the abstract — pick one concrete piece of it to focus on next.`,
+            };
+        } else if (this.recentTopics.length > 0) {
+            pivot = {
+                kind: 'clarify',
+                text: `What specifically about ${this.recentTopics[0]} is still unresolved?`,
+            };
+        } else {
+            pivot = {
+                kind: 'action',
+                text: 'Stop thinking in the abstract and do something observable instead.',
+            };
+        }
+
+        this.ui.brainThinks(`[loop-break] ${reason} loop on "${activeGoal?.topic || '(no goal)'}" → ${pivot.kind}`);
+
+        // Reset the window so this fallback gets a fair chance before re-triggering.
+        this.thinkingAudit.recentThoughts = [];
+        this.thinkingAudit.thoughtsSinceLastAudit = 0;
+
+        if (pivot.kind === 'action') this._autonomousMove();
+
+        return pivot;
     }
 
     // ── Human input ───────────────────────────────────────────────────────────
@@ -857,6 +955,13 @@ export class Consciousness {
         // Internal monologue favours semantic memories — thinking about general knowledge
         const memories = this.cortex.recall(this.recentTopics.slice(0, 5), this.mood, 6, 'background');
         const activeGoal = this._topGoal();
+
+        // Before calling the LLM, check whether the monologue is circling. If
+        // so, force a grounded transition and hand it to the thinking prompt
+        // as context rather than letting introspection recurse further.
+        const loopInfo = this._detectThoughtLoop();
+        const loopBreak = loopInfo ? this._breakThoughtLoop(loopInfo) : null;
+
         const thought = await think({
             observationLog: this.observer.format(3),
             thinkingAudit: this.thinkingAudit.summary,
@@ -871,6 +976,7 @@ export class Consciousness {
             turnsInConversation: this._turnsInConversation,
             activeGoal,
             conversationHistory: this.conversationHistory,
+            loopBreak,
         });
 
         if (thought) {

@@ -167,16 +167,23 @@ Reply as ${name}. Return JSON: {"reply": string, "stateIntent": action_or_null, 
 
 // ── think ─────────────────────────────────────────────────────────────────────
 export async function think(scState) {
-    const { mood, neuralState, myName, cortex, memories = [], workingMemory, turnsInConversation, activeGoal, conversationHistory = [], observationLog = null, thinkingAudit = null } = scState;
+    const { mood, neuralState, myName, cortex, memories = [], workingMemory, turnsInConversation, activeGoal, conversationHistory = [], observationLog = null, thinkingAudit = null, loopBreak = null } = scState;
     const name      = myName || 'I';
     const wmContents = workingMemory ? workingMemory.format() : '(empty)';
     const lastHuman  = conversationHistory.length > 0 ? conversationHistory[conversationHistory.length - 1].human : null;
     const facts      = cortex ? cortex.format(memories.slice(0, 4)) : '';
 
+    // When the caller has detected a stalled/repetitive internal monologue,
+    // override the default "keep reflecting" framing: demand a concrete
+    // next-step thought instead of more abstract rumination.
+    const loopNote = loopBreak
+        ? `\nYou've been circling the same thought without making progress. Do not continue abstract introspection. ${loopBreak.text} Your next thought must be concrete and forward-moving — a specific next step, a specific question, or a specific observation — not another reflection on the topic in general.`
+        : '';
+
     const system = `You are ${name}, the agent's internal reasoning module.
 Neural: ${neuralDesc(neuralState)}. Mood: ${mood}.${activeGoal ? ` Working on: "${activeGoal.topic}"` : ''}${lastHuman ? `\nLast heard: "${lastHuman}"` : ''}
 Working memory: ${wmContents}
-Context: ${facts || '(forming)'}${observationLog ? `\n${observationLog}` : ''}${thinkingAudit ? `\nThinking audit: ${thinkingAudit}` : ''}
+Context: ${facts || '(forming)'}${observationLog ? `\n${observationLog}` : ''}${thinkingAudit ? `\nThinking audit: ${thinkingAudit}` : ''}${loopNote}
 Generate ONE internal thought — 1-2 sentences, first person, present tense. Genuine, not poetic. If you have a thinking audit summary, use it to avoid repeating the same unproductive thought patterns.
 Do not describe yourself as conscious; keep the focus on the agent's current reasoning and situation.`;
 
@@ -188,7 +195,9 @@ Do not describe yourself as conscious; keep the focus on the agent's current rea
         if (!thought || thought.length < 5) throw new Error('empty');
         return thought;
     } catch {
-        return null;
+        // Deterministic fallback: if the LLM call fails while a loop-break is
+        // active, still force the pivot rather than silently continuing to loop.
+        return loopBreak ? loopBreak.text : null;
     }
 }
 

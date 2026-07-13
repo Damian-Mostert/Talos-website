@@ -1255,7 +1255,6 @@ export default function TalosChatPage() {
       <div id="chat-col">
         <canvas id="neural-canvas"></canvas>
         <div id="neural-scrim"></div>
-        <div id="neural-watermark">neural substrate — live</div>
 
         <header>
           <div id="header-left">
