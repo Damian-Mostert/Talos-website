@@ -3,10 +3,26 @@
 import { useEffect, useRef } from 'react';
 import TalosWorldPage from './components/world';
 import { connectPseudoSocket, PseudoSocket } from '@core/web-server';
+import bootBrain from "../core/index";
 
 export default function TalosChatPage() {
   const toggleThemeRef = useRef<() => void>(() => {});
   const sendRef = useRef<() => void>(() => {});
+
+  useEffect(() => {
+    let cancelled = false;
+    const run = async () => {
+      try {
+        await bootBrain();
+      } catch (err) {
+        if (!cancelled) console.error('bootBrain failed', err);
+      }
+    };
+    run();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     let mounted = true;
@@ -1147,7 +1163,7 @@ export default function TalosChatPage() {
               </button>
             </footer>
           </div>
-          <div className='min-w-screen min-h-screen lg:min-w-[300px] flex'>
+          <div className='min-w-screen min-h-screen lg:min-w-[300px] lg:max-w-[300px] flex'>
             <div id="panel" className='w-full h-full' >
               <div id="avatar-wrap" aria-label="Live pet state avatar">
                 <div id="rainbow-ring"></div>

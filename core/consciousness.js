@@ -1,6 +1,7 @@
-import { soundPattern, SEED_CONCEPTS } from './boot.js';
-import { search } from './search.js';
+import { soundPattern, languageBoot } from './boot.js';
+import { Researcher } from './research.js';
 import { understand, respond, think, speak, auditThinking } from './llm.js';
+import { ConceptNet } from './concepts.js';
 import { saveSnapshot, saveGenome, loadGenome, saveState, loadState } from './snapshot.js';
 import { MemoryCortex } from './memory.js';
 import { WorkingMemory } from './working-memory.js';
@@ -10,7 +11,96 @@ import { Genome } from './genome.js';
 import { Homeostasis } from './homeostasis.js';
 import { StateRegulator } from './regulator.js';
 import { VisualCortex } from './vision.js';
-import { runSandbox } from './sandbox.js';
+import { BeliefStore } from './beliefs.js';
+
+// Developmental concept data — instincts, not knowledge. These are not facts
+// Talos knows; they are orientations Talos starts with, gated by stage.
+// certainty:      how confident Talos is (starts low for abstract concepts)
+// curiosity:      how much Talos wants to understand this (starts high for unknowns)
+// examplesNeeded: true = Talos should ask/observe before claiming to understand
+// stage:          which developmental stage unlocks this concept
+//
+// This used to live in boot.js as SEED_CONCEPTS. It's local to consciousness.js
+// now — boot.js only deals in grounded experiences, not concept metadata like
+// certainty/curiosity, so this is the one place that shape is still needed.
+const DEV_CONCEPTS = new Map([
+    // Stage 1 — drives and sensations (innate, high certainty)
+    ['pain',        { stage: 1, certainty: 0.8, curiosity: 0.3, examplesNeeded: false,
+                      hint: 'something hurts — avoid it' }],
+    ['curiosity',   { stage: 1, certainty: 0.7, curiosity: 0.9, examplesNeeded: false,
+                      hint: 'the pull toward the unknown' }],
+    ['fear',        { stage: 1, certainty: 0.7, curiosity: 0.4, examplesNeeded: false,
+                      hint: 'something may cause harm' }],
+
+    // Stage 2 — objects and actions (grounded, moderate certainty)
+    ['learning',    { stage: 2, certainty: 0.5, curiosity: 0.8, examplesNeeded: true,
+                      hint: 'something changed because of what happened' }],
+    ['memory',      { stage: 2, certainty: 0.4, curiosity: 0.7, examplesNeeded: true,
+                      hint: 'I have been here before' }],
+    ['language',    { stage: 2, certainty: 0.4, curiosity: 0.8, examplesNeeded: true,
+                      hint: 'sounds that carry meaning between minds' }],
+
+    // Stage 3 — social and emotional (low certainty, needs experience)
+    ['trust',       { stage: 3, certainty: 0.2, curiosity: 0.9, examplesNeeded: true,
+                      hint: 'I have heard this word — I do not yet know what it feels like' }],
+    ['empathy',     { stage: 3, certainty: 0.1, curiosity: 0.9, examplesNeeded: true,
+                      hint: 'something about feeling what another feels — unclear' }],
+    ['emotion',     { stage: 3, certainty: 0.3, curiosity: 0.8, examplesNeeded: true,
+                      hint: 'internal states that seem to drive behaviour' }],
+
+    // Stage 4 — self-model (very low certainty, deeply uncertain)
+    ['identity',    { stage: 4, certainty: 0.1, curiosity: 1.0, examplesNeeded: true,
+                      hint: 'what makes me the same thing across time — unknown' }],
+    ['consciousness', { stage: 4, certainty: 0.05, curiosity: 1.0, examplesNeeded: true,
+                      hint: 'I have heard many descriptions — I do not understand it yet' }],
+    ['intelligence', { stage: 4, certainty: 0.2, curiosity: 0.8, examplesNeeded: true,
+                      hint: 'the ability to act well in the world — but what does that mean for me?' }],
+
+    // Stage 5 — abstract (minimal certainty, pure curiosity)
+    ['evolution',   { stage: 5, certainty: 0.1, curiosity: 0.7, examplesNeeded: true,
+                      hint: 'a description I have encountered — not yet grounded' }],
+    ['philosophy of mind', { stage: 5, certainty: 0.05, curiosity: 0.9, examplesNeeded: true,
+                      hint: 'questions about what I might be — deeply uncertain' }],
+]);
+
+// Internal bookkeeping labels — used to tag working-memory/cortex entries by
+// source (e.g. "this came from me talking"), never meant to be topics Talos
+// researches or forms understanding-goals about. Left out of curiosity/goal
+// creation; still fine to appear in recentTopics for memory recall purposes.
+const RESERVED_TOPICS = new Set(['self_speech', 'self']);
+
+// How long a topic stays off-limits for curiosity/goal re-creation after
+// _retireCuriosity() resolves or abandons it. Without this, a topic that
+// Talos itself keeps using in its own speech (e.g. "memory" — inherently
+// self-referential, since the system talks about its own memory constantly)
+// gets re-added to `curiosity` by _selfSpoke/_humanSpoke the instant it's
+// resolved, respawns as a fresh goal on the very next _driveGoalsFromCuriosity
+// tick, and the whole resolve→respawn cycle repeats in a sub-second loop —
+// which surfaces as Talos asking the same handful of clarifying questions
+// about that topic over and over instead of doing anything else. A cooldown
+// still lets the topic reopen later (a real, sustained conversation about it
+// will push through once the cooldown lapses) without permanently banning it.
+const CURIOSITY_COOLDOWN_MS = 60000;
+
+// How long a goal can sit at the top of goalStack without a single thought
+// ever literally containing its topic/entity string, before _think() force-
+// abandons it on its own. Both existing resolution paths (conclude/abandon)
+// live inside `if (touchesGoal)` in _think() — if the thinking LLM reflects
+// on a goal's topic abstractly without ever typing the literal word (e.g.
+// discussing trust via "reliability", "vulnerability", "letting someone in"
+// instead of the word "trust" itself), touchesGoal never becomes true and the
+// goal is never touched by either path. The only other expiry, in
+// _resolveTopGoal(), only ever runs from _respondToHuman(), i.e. only when a
+// human is actively talking. While Talos is idle and just thinking to itself,
+// there is no time-based way out at all — a goal that never gets said back
+// verbatim can survive indefinitely. This constant gives _think() its own
+// independent, idle-safe escape valve. Matches the 5-minute window already
+// used by _resolveTopGoal and _scoreGoal's agePenalty, so a goal times out on
+// roughly the same clock whether a human is present or not.
+const GOAL_IDLE_TIMEOUT_MS = 300000;
+// Unprompted speech was repeatedly surfacing low-information token loops.
+// It is opt-in while Talos develops a reliable reason-to-speak model.
+const AUTONOMOUS_SPEECH = process.env.NEXT_PUBLIC_BRAIN_AUTONOMOUS_SPEECH === 'true';
 
 // Small standalone helpers for the loop detector — pure functions, no `this`,
 // so they're trivial to reason about and test independently of the class.
@@ -36,6 +126,20 @@ export class Consciousness {
         this.lastSpokeTick   = 0;
         this.inputQueue      = [];
 
+        // Recent spontaneous (unprompted) self-speech utterances — backs
+        // _isRepeatSpontaneousSpeech(). This is the spontaneous-speech
+        // equivalent of thinkingAudit.recentThoughts, which _detectThoughtLoop()
+        // already uses to catch _think()'s internal monologue looping. That
+        // machinery only ever sees thoughts recorded inside _think() though —
+        // _composeSpeech()'s output (fired from the _shouldSpeak() branch in
+        // start()'s main loop) never touched thinkingAudit at all, so a stock
+        // emotional line the LLM anchors on (e.g. "pain reminds me of what
+        // happened.") could be spoken over and over, unprompted, interleaved
+        // with real conversational replies, with nothing ever detecting or
+        // breaking it. See the _shouldSpeak() branch in start() for where
+        // this is checked and populated.
+        this._recentSpontaneousSpeech = [];
+
         this.thoughts = [];
         this.myName   = null;
         this.humanName = null;
@@ -48,7 +152,19 @@ export class Consciousness {
         this.devStageProgress = 0;
         this.DEV_STAGE_THRESHOLDS = [0, 0, 5, 15, 30, 60];
 
+        // Fuels _advanceDevStage(). A live conversation turn counts for more
+        // (it's richer, grounded, corrected by another mind) but autonomous
+        // thinking and spontaneous speech contribute too — otherwise
+        // development, and the new-curiosity-topics it seeds, stalls
+        // completely whenever no human is present. See _think() and the
+        // _shouldSpeak() branch in start() for where this gets incremented.
+        this._experiencePoints = 0;
+
         this.curiosity = [];
+
+        // topic → ms timestamp of its last _retireCuriosity() call. Backs
+        // _onCuriosityCooldown() — see CURIOSITY_COOLDOWN_MS above.
+        this._curiosityRetiredAt = new Map();
 
         // Genome first — everything else reads from it
         this.genome = new Genome();
@@ -67,10 +183,47 @@ export class Consciousness {
         this.goalStack    = [];
         this.goalHistory  = [];
 
-        this._bgResearching = false;
+            this._bgResearching = false;
         this._thinkCooldown = 0;
         this._turnsInConversation = 0;
         this._decayInterval = null;
+
+        // FIFO of topics explicitly flagged by _think() as "stuck, needs research".
+        // This is deliberately decoupled from the goalStack's priority scoring —
+        // see _backgroundLearn() for why: goal scores are volatile (they shift
+        // every turn based on working-memory relevance), so a goal that's
+        // actively stalled can get starved of research if _backgroundLearn just
+        // re-derives its target from _topGoal() at whatever moment it happens
+        // to fire. Explicit "someone is stuck on this" signals get a guaranteed
+        // research slot in FIFO order instead of having to win a re-scored
+        // popularity contest against whatever goal most recently touched
+        // working memory (e.g. 'self_speech', which refreshes every turn).
+        this._researchQueue = [];
+
+        // Topics that research.js has already resolved (mirrors its own
+        // internal `_researched` Set — see _backgroundLearn()). Once a topic
+        // lands here, requeueing it into _researchQueue is pointless: it will
+        // just come back as a silent no-op from research.js with no log and
+        // no progress. This is what lets _think() tell the difference between
+        // "still needs research" and "research already happened, still stuck".
+        this._researchedTopics = new Set();
+
+        // Per-topic count of consecutive null results from _fireResearch (the
+        // direct goalStack-driven path in _backgroundLearn, step 2 — not the
+        // FIFO _researchQueue). research.js gives up on a topic internally
+        // after MAX_FAILED_ATTEMPTS and starts returning null synchronously
+        // with no log — a silent no-op. Without tracking that here too, a
+        // goal that research.js has already given up on just keeps getting
+        // re-fired every _backgroundLearn tick forever, permanently occupying
+        // one of the MAX_PER_TICK slots with dead weight. See _fireResearch().
+        this._researchFailCounts = new Map();
+
+        // Most recent research result per topic, keyed the same way
+        // _fireResearch encodes into the cortex. _think() reads this
+        // directly so the thinking prompt gets an explicit "here's what
+        // was found" input instead of relying entirely on cortex.recall
+        // fuzzy-matching the topic out of whatever's in recentTopics.
+        this._lastResearchByTopic = new Map();
 
         this.thinkingAudit = {
             recentThoughts: [],
@@ -83,11 +236,20 @@ export class Consciousness {
         this.lastScene     = null;
         this.lastObjects   = [];
 
+        // Semantic grounding layer — concepts built from experience, not LLM knowledge.
+        // The LLM gets concept activations; it translates them into language.
+        this.conceptNet = new ConceptNet();
+        this.beliefs = new BeliefStore();
+
         this.memory = [];
         this.selfModel = { name: null, known: [] };
         this.activeGoal = null;
         this.plan = null;
         this._memoryIndex = new Map();
+
+        // Background researcher — Groq calls for curiosity goals only.
+        // Never used in the conversation/response path.
+        this._researcher = new Researcher();
     }
 
     _ensureBrainState() {
@@ -227,6 +389,30 @@ export class Consciousness {
         return hits[hits.length - 1] || null;
     }
 
+    // Ground a world interaction event into the concept layer.
+    // This is the experience→meaning pipeline: food tastes good, pokes hurt.
+    // The concept layer learns this from repeated experience, not from the LLM.
+    groundInteraction(note, x = null, y = null) {
+        const n = (note || '').toLowerCase();
+        const { valence, arousal } = this.neuralState;
+        if (n.includes('feed') || n.includes('food')) {
+            this.conceptNet.learn('food',   { edible: 0.9, present: 1.0 }, { valence: 0.8, arousal: 0.5, approach:  1.0 }, 'eat',   0.7);
+            this.conceptNet.learn('hungry', {},                             { valence: -0.4, arousal: 0.5, approach: -0.3 }, null,    0.3);
+            this.conceptNet.associate('food', 'good', 0.5);
+            this.conceptNet.associate('food', 'warm', 0.3);
+        } else if (n.includes('poke') || n.includes('aversive')) {
+            this.conceptNet.learn('poke',   { contact: 1.0, sudden: 0.8 }, { valence: -0.6, arousal: 0.8, approach: -0.9 }, 'avoid', 0.7);
+            this.conceptNet.associate('poke', 'pain', 0.5);
+            this.conceptNet.associate('poke', 'danger', 0.4);
+        } else if (n.includes('danger') || n.includes('hurt')) {
+            this.conceptNet.learn('danger', { threat: 1.0 },               { valence: -0.9, arousal: 0.9, approach: -1.0 }, 'flee',  0.9);
+            this.conceptNet.associate('danger', 'fear', 0.6);
+        } else if (n.includes('rest')) {
+            this.conceptNet.learn('rest',   { still: 0.9 },                { valence:  0.6, arousal: 0.1, approach:  0.5 }, 'rest',  0.5);
+            this.conceptNet.associate('rest', 'safe', 0.4);
+        }
+    }
+
     enableCamera() {
         this.visualCortex = new VisualCortex();
         this.visualCortex.start(this.brain, ({ scene, objects }) => {
@@ -243,11 +429,15 @@ export class Consciousness {
             // Load into working memory so Talos is actively attending to what it sees
             this.wm.hold(`I can see: ${scene}`, objects, 'visual', 0.8);
 
-            // Each visible object gets Hebbian encoding + consolidation — same as hearing a word
+            // Each visible object gets Hebbian encoding + consolidation — same as hearing a word.
+            // Also activate its concept and associate it with current emotional state.
+            const { valence, arousal } = this.neuralState;
+            const approach = valence > 0 ? Math.min(1, valence + 0.1) : Math.max(-1, valence - 0.1);
             for (const obj of objects.slice(0, 6)) {
                 this._learnConcept(obj, 0.5);
+                this.conceptNet.learn(obj, { visible: 1.0 }, { valence, arousal, approach }, 'look', 0.3);
                 if (!this.recentTopics.includes(obj)) this.recentTopics.unshift(obj);
-                if (!this.curiosity.includes(obj))    this.curiosity.push(obj);
+                this._addCuriosity(obj);
             }
             if (this.recentTopics.length > 20) this.recentTopics = this.recentTopics.slice(0, 20);
             if (this.curiosity.length > 40)    this.curiosity    = this.curiosity.slice(-40);
@@ -262,6 +452,38 @@ export class Consciousness {
 
     _looksLikeCommand(text) {
         return typeof text === 'string' && /^\s*cmd:/i.test(text);
+    }
+
+    _normalizeFocusEntities(entities = []) {
+        return (entities || [])
+            .filter(e => typeof e === 'string')
+            .map(e => e.toLowerCase())
+            .filter(Boolean);
+    }
+
+    _inferFocusTopic(content, entities = []) {
+        const text = String(content || '').toLowerCase();
+        const normalizedEntities = this._normalizeFocusEntities(entities);
+        const direct = normalizedEntities.find(e => e.length > 2);
+        if (direct) return direct;
+        for (const topic of this.recentTopics.slice(0, 10)) {
+            const topicText = String(topic || '').toLowerCase();
+            if (topicText && text.includes(topicText)) return topicText;
+        }
+        const activeGoal = this._topGoal();
+        if (activeGoal?.topic) return String(activeGoal.topic).toLowerCase();
+        for (const [topic] of DEV_CONCEPTS) {
+            if (text.includes(String(topic).toLowerCase())) return String(topic).toLowerCase();
+        }
+        return null;
+    }
+
+    _updateSharedFocus(source, content, entities = [], strength = 0.8) {
+        const topic = this._inferFocusTopic(content, entities);
+        if (!topic) return this.wm.getFocus();
+        const focusEntities = this._normalizeFocusEntities([topic, ...(entities || [])]);
+        this.wm.setFocus(topic, focusEntities, source, strength);
+        return this.wm.getFocus();
     }
 
     async _handleCommand(text) {
@@ -296,21 +518,20 @@ export class Consciousness {
     // and automatically seed curiosity goals so Talos asks rather than asserts.
 
     _seedConceptsForStage(stage) {
-        for (const [topic, concept] of SEED_CONCEPTS) {
+        for (const [topic, concept] of DEV_CONCEPTS) {
             if (concept.stage > stage) continue;
             // Salience = certainty — Talos holds uncertain concepts loosely
             this.cortex.encode(concept.hint, [topic], 'neutral', concept.certainty, 0, 'semantic');
-            // Concepts needing examples become curiosity goals, not facts
-            if (concept.examplesNeeded && concept.curiosity > 0.5) {
-                if (!this.curiosity.includes(topic)) this.curiosity.push(topic);
-            }
+            // Developmental concepts are dispositions, not self-assigned
+            // research tasks. A topic enters curiosity only after perception
+            // or a human explicitly brings it into the current context.
         }
     }
 
     _advanceDevStage() {
         if (this.devStage >= 5) return;
         const threshold = this.DEV_STAGE_THRESHOLDS[this.devStage + 1];
-        if (this._turnsInConversation >= threshold) {
+        if (this._experiencePoints >= threshold) {
             this.devStage++;
             this._seedConceptsForStage(this.devStage);
             this.ui.brainThinks(`[dev] stage ${this.devStage} unlocked`);
@@ -421,7 +642,7 @@ export class Consciousness {
     async _runThinkingAudit() {
         if (!this._shouldRunThinkingAudit()) return;
         const activeGoal = this._topGoal();
-        const auditSummary = await auditThinking({
+        const auditSummary = auditThinking({
             mood: this.mood,
             neuralState: this.neuralState,
             myName: this.myName,
@@ -431,6 +652,7 @@ export class Consciousness {
             conversationHistory: this.conversationHistory,
             observationLog: this.observer.format(4),
             goalHistory: this.goalHistory.slice(-8),
+            researchedFacts: activeGoal ? this._lastResearchByTopic.get(activeGoal.topic) : null,
         });
         if (!auditSummary) return;
         this.thinkingAudit.summary = auditSummary;
@@ -530,24 +752,79 @@ export class Consciousness {
         return pivot;
     }
 
+    // ── Spontaneous speech loop detection ────────────────────────────────────
+    // Mirrors _detectThoughtLoop()'s repetition check, but scoped to
+    // _composeSpeech()'s output instead of _think()'s internal monologue —
+    // see the _recentSpontaneousSpeech comment in the constructor for why
+    // this was needed as its own, separate guard rather than folding into
+    // the existing one. Threshold is a bit higher than the thought-loop's
+    // 0.55 (0.6 here) since spontaneous utterances are short and naturally
+    // share more function words even when they're not the same thought.
+    _isRepeatSpontaneousSpeech(text) {
+        if (!text || this._recentSpontaneousSpeech.length === 0) return false;
+        const tokens = _tokenSet(text);
+        return this._recentSpontaneousSpeech.some(entry => _jaccard(tokens, _tokenSet(entry.text)) >= 0.6);
+    }
+
     // ── Human input ───────────────────────────────────────────────────────────
 
     _humanSpoke(text, entities = []) {
-        this._setDopamine(2.5);
+        // Decay toward 2.5 rather than slamming it there — prevents any single
+        // turn from instantly dominating the dopamine signal.
+        const currentDa = this._getDopamine();
+        this._setDopamine(Math.min(2.5, currentDa + 0.8));
         this.ticksSinceHuman = 0;
 
         const words = text.toLowerCase().replace(/[^a-z\s]/g, ' ').split(/\s+/).filter(w => w.length > 1);
         for (const word of words) this.brain.perceive(soundPattern(word));
 
+        // Filter the human's name out of the concept pipeline — it's already
+        // handled by _rememberIdentity and should not compete with content words
+        // in the general concept/utterance learning path.
+        const humanNameLower = (this.humanName || '').toLowerCase();
         const concepts = entities.length > 0
-            ? entities.filter(e => typeof e === 'string').map(e => e.toLowerCase()).filter(e => e.length > 3)
-            : words.filter(w => w.length > 4);
+            ? entities.filter(e => typeof e === 'string').map(e => e.toLowerCase())
+                      .filter(e => e.length > 3 && e !== humanNameLower)
+            : words.filter(w => w.length > 4 && w !== humanNameLower);
+
+        // Store the human's utterance as a speech pattern memory.
+        // This is how the system learns language: by hearing it, not by being programmed with it.
+        // Use current (ramped) dopamine rather than hardcoded 2.5.
+        this.cortex.encode(text, concepts.slice(0, 5), 'neutral', 0.7, this._getDopamine(), 'utterance');
+
+        // Activate concepts in the semantic grounding layer.
+        // Each word heard activates its concept cluster — this is what builds
+        // the association between words and their emotional/sensory meaning.
+        const { valence, arousal } = this.neuralState;
+        const approach = valence > 0 ? Math.min(1, valence + 0.2) : Math.max(-1, valence - 0.2);
+        for (const word of words.filter(w => w.length > 3)) {
+            this.conceptNet.activate(word, 0.6);
+        }
+        // Learn emotional context for the entities in this message
+        for (const entity of concepts.slice(0, 5)) {
+            this.conceptNet.learn(entity, {}, { valence, arousal, approach }, null, 0.4);
+        }
+        // Associate co-occurring words — Hebbian at the concept level
+        for (let i = 0; i < concepts.length - 1; i++) {
+            this.conceptNet.associate(concepts[i], concepts[i + 1], 0.3);
+        }
 
         for (const concept of concepts.slice(0, 5)) {
             this._brainEncode(soundPattern(concept), 0.8);
             this._brainConsolidate(soundPattern(concept), 0.6);
             if (!this.recentTopics.includes(concept)) this.recentTopics.unshift(concept);
-            if (!this.curiosity.includes(concept)) this.curiosity.push(concept);
+            this._addCuriosity(concept);
+        }
+
+        if (concepts.includes('fear') && concepts.includes('danger')) {
+            this.conceptNet.associate('fear', 'danger', 0.6);
+            this.conceptNet.associate('danger', 'fear', 0.6);
+        }
+        if (concepts.includes('fear')) {
+            this.conceptNet.learn('fear', {}, { valence, arousal, approach }, null, 0.5);
+        }
+        if (concepts.includes('danger')) {
+            this.conceptNet.learn('danger', {}, { valence, arousal, approach }, null, 0.5);
         }
         if (this.recentTopics.length > 20) this.recentTopics = this.recentTopics.slice(0, 20);
         if (this.curiosity.length > 40)    this.curiosity    = this.curiosity.slice(-40);
@@ -555,36 +832,48 @@ export class Consciousness {
         // Load human input into working memory — this is what we're actively attending to
         this.wm.hold(text.slice(0, 200), concepts.slice(0, 5), 'input', 1.0);
         this.wm.rehearse(concepts);
+        this._updateSharedFocus('input', text, concepts.slice(0, 5), 0.95);
     }
 
     _selfSpoke(text, entities = []) {
         const words = text.toLowerCase().replace(/[^a-z\s]/g, ' ').split(/\s+/).filter(w => w.length > 1);
         for (const word of words) this.brain.perceive(soundPattern(word));
+        // When the system speaks a word, it reinforces the concept's emotional grounding
+        for (const word of words.filter(w => w.length > 3)) {
+            this.conceptNet.activate(word, 0.3);
+        }
 
         const concepts = entities.length > 0
             ? entities.filter(e => typeof e === 'string').map(e => e.toLowerCase()).filter(e => e.length > 3)
             : words.filter(w => w.length > 4);
 
-        const selfEntities = [...new Set(['self_speech', 'self', ...concepts])];
-        for (const concept of selfEntities.slice(0, 6)) {
+        // Store own utterance as a speech pattern memory.
+        // Salience starts low — it rises if this pattern gets recalled and reused successfully.
+        this.cortex.encode(text, concepts.slice(0, 5), 'neutral', 0.4, this._getDopamine(), 'utterance');
+        this._lastUtterance = text;
+
+        const proceduralEntities = [...new Set(['self_speech', 'self', ...concepts])];
+        for (const concept of concepts.slice(0, 5)) {
             this._brainEncode(soundPattern(concept), 0.7);
             this._brainConsolidate(soundPattern(concept), 0.5);
             if (!this.recentTopics.includes(concept)) this.recentTopics.unshift(concept);
-            if (!this.curiosity.includes(concept)) this.curiosity.push(concept);
+            this._addCuriosity(concept);
         }
         if (this.recentTopics.length > 20) this.recentTopics = this.recentTopics.slice(0, 20);
         if (this.curiosity.length > 40)    this.curiosity    = this.curiosity.slice(-40);
 
-        this.cortex.encode(`I said: ${text}`, selfEntities, 'neutral', 0.5, this._getDopamine(), 'procedural');
-        this._learnFromText(text, selfEntities, 'neutral', 0.3);
-        this.wm.hold(text.slice(0, 200), selfEntities, 'self_speech', 0.9);
-        this.wm.rehearse(selfEntities);
+        this.cortex.encode(text, proceduralEntities.slice(0, 5), 'neutral', 0.5, this._getDopamine(), 'procedural');
+        this._learnFromText(text, proceduralEntities, 'neutral', 0.3);
+        this.wm.hold(text.slice(0, 200), concepts.slice(0, 5), 'self_speech', 0.9);
+        this.wm.rehearse(concepts);
+        this._updateSharedFocus('self_speech', text, concepts.slice(0, 5), 0.8);
     }
 
     // ── Core response pipeline ────────────────────────────────────────────────
 
     async _respondToHuman(text) {
         this._turnsInConversation++;
+        this._experiencePoints += 3; // a live conversation turn counts for more than solo reflection
         this._advanceDevStage();
 
         const nameMatch = text.match(/(?:my name is|call me|i(?:'m| am))\s+([A-Za-z][a-zA-Z]+)/i);
@@ -594,7 +883,7 @@ export class Consciousness {
         this.ui.brainThinks(`[pfc] ${pfcLevel.toFixed(3)}`);
         this.ui.thinking('thinking...');
 
-        const parsed = await understand(text, {
+        const parsed = understand(text, {
             recentTopics: this.recentTopics.slice(0, 8),
             knowledge:    this.recentTopics.slice(0, 15),
             mood:         this.mood,
@@ -603,6 +892,7 @@ export class Consciousness {
         });
 
         this._humanSpoke(text, parsed.entities || []);
+        const focus = this._updateSharedFocus('input', text, parsed.entities || [], 0.95);
 
         // Reafference — read what the association cortex settled into after encoding
         // This is the brain's actual response to the input, not just the text entities.
@@ -631,8 +921,14 @@ export class Consciousness {
         // Push a goal if this input implies one — questions, corrections, teaching all create goals.
         // For compatibility with older tests and lightweight prompt parsing, also create a goal when
         // the text contains an explicit request for help or understanding.
-        const explicitGoalTopic = typeof text === 'string' && /help|understand|learn|explain|memory/i.test(text)
-            ? text.match(/(?:help|understand|learn|explain|memory)[^\n.]*/i)?.[0] || 'understanding'
+        // Capture just the matched keyword itself (lowercased), not the
+        // trailing clause — capturing "memory happen?" / "memory that you
+        // don't..." etc. produced a slightly different topic string on
+        // every mention, which bypassed _pushGoal's exact-string dedupe and
+        // the post-retirement cooldown, letting a single recurring word
+        // (e.g. "memory") stack up unbounded near-duplicate goals.
+        const explicitGoalTopic = typeof text === 'string'
+            ? text.match(/help|understand|learn|explain|memory/i)?.[0]?.toLowerCase() || null
             : null;
         if (parsed.topic && typeof parsed.topic === 'string') {
             const goalType =
@@ -671,27 +967,19 @@ export class Consciousness {
             this.wm.hold(text.slice(0, 200), parsed.entities || [], 'input', 1.0);
         }
 
-        // Search if needed
-        let searchResult = null;
-        if (parsed.needsSearch && parsed.searchQuery) {
-            this.ui.thinking(`searching "${parsed.searchQuery}"...`);
-            try {
-                const results = await search(parsed.searchQuery);
-                const useful  = results.find(r => r.text && r.text.length > 60);
-                if (useful) {
-                    searchResult = useful.text;
-                    // Search results are semantic — factual knowledge, not tied to a turn
-                    this.cortex.encode(useful.text.slice(0, 300), [parsed.searchQuery, ...(parsed.entities || [])], 'neutral', 0.7, this._getDopamine(), 'semantic');
-                    this._learnFromText(useful.text, parsed.entities || [], 'neutral', 0.6);
-                    this.ui.brainThinks(`[learned] "${parsed.searchQuery}"`);
-                }
-            } catch {}
-        }
+        const searchResult = null;
 
         if (parsed.intent === 'teaching' && parsed.topic && parsed.summary) {
             // Teaching encodes as semantic — it's meant to be general knowledge
             this.cortex.encode(parsed.summary, [parsed.topic, ...(parsed.entities || [])], emotion, 0.8, this._getDopamine(), 'semantic');
             this._learnConcept(parsed.topic, 0.8);
+            this.beliefs.record({
+                topic: parsed.topic,
+                claim: parsed.summary,
+                source: 'human',
+                confidence: 0.45,
+                verified: false,
+            });
         }
 
         // Recall relevant memories — biased by neural reafference pattern
@@ -700,39 +988,67 @@ export class Consciousness {
         const activeGoal = this._topGoal();
 
         // Look up certainty for the topic being discussed
-        const topicConcept = parsed.topic && typeof parsed.topic === 'string' ? SEED_CONCEPTS.get(parsed.topic.toLowerCase()) : null;
+        const topicConcept = parsed.topic && typeof parsed.topic === 'string' ? DEV_CONCEPTS.get(parsed.topic.toLowerCase()) : null;
         const conceptCertainty = topicConcept ? topicConcept.certainty : null;
 
         // Predict before deciding
         const decisionRecord = this.meta.predict(this.neuralState, parsed, reaf.strength);
         this.ui.brainThinks(`[meta] predicted response_type=${decisionRecord.prediction.response_type}`);
 
+        const groundingThoughts = [];
+
+        // Think once before answering. This lets the system reflect on the
+        // question and bring up its current internal knowledge before research.
+        const preAnswerThought = await this._think();
+        if (preAnswerThought) {
+            groundingThoughts.push(preAnswerThought);
+            this.thoughts.push(preAnswerThought);
+            if (this.thoughts.length > 30) this.thoughts.shift();
+        }
+
+        // If the input is a question, wait for topic research and then think
+        // again so the answer can incorporate the newly grounded facts.
+        let questionResearch = null;
+        if (parsed.intent === 'question' && parsed.topic && typeof parsed.topic === 'string') {
+            const relatedGoal = this.goalStack.find(g => g.topic === parsed.topic) || null;
+            questionResearch = await this._awaitResearchForTopic(parsed.topic, parsed.entities || [], relatedGoal, 6000);
+            const postResearchThought = await this._think();
+            if (postResearchThought) {
+                groundingThoughts.push(postResearchThought);
+                this.thoughts.push(postResearchThought);
+                if (this.thoughts.length > 30) this.thoughts.shift();
+            }
+        }
+
+        const groundingTopics = [...new Set([parsed.topic, ...(parsed.entities || []), ...(focus?.entities || []), ...(activeGoal ? [activeGoal.topic] : [])].filter(Boolean))];
+        const groundingMemories = groundingTopics.length > 0
+            ? this.cortex.recall(groundingTopics.slice(0, 4), emotion, 4, 'conversation')
+            : [];
+        if (groundingMemories.length > 0) {
+            const groundingText = groundingMemories.map(m => m.content).slice(0, 2).join(' | ');
+            this.wm.hold(groundingText.slice(0, 200), groundingTopics.slice(0, 4), 'grounding', 0.85);
+            this._updateSharedFocus('grounding', groundingText, groundingTopics.slice(0, 4), 0.8);
+        }
+
         // Raw snapshot before LLM call — captures pre-response brain state
         const rawStateBefore = this.brain.readInternalState();
 
-        // ── Sandbox execution — run any calcCode the LLM emitted last turn ────
-        // We pass sandboxResult into respond() so the AI sees its own output.
-        let sandboxResult = null;
-        if (this._pendingCalcCode) {
-            const sr = runSandbox(this._pendingCalcCode);
-            sandboxResult = sr.error
-                ? `[calc error] ${sr.error}`
-                : `[calc result] ${sr.result}${sr.logs ? '\n' + sr.logs : ''}`;
-            this.ui.brainThinks(sandboxResult);
-            this._pendingCalcCode = null;
-        }
+        const sandboxResult = null;
 
-        const reply = await respond(parsed, {
+        const reply = respond(parsed, {
             mood:         this.mood,
             neuralState:  this.neuralState,
             myName:       this.myName,
             humanName:    this.humanName,
+            focus,
             recentTopics: this.recentTopics,
             cortex:       this.cortex,
             memories,
             workingMemory: this.wm,
             turnsInConversation: this._turnsInConversation,
             activeGoal,
+            groundingMemories,
+            internalThoughts: [...groundingThoughts, ...this.thoughts.slice(-6)],
             goalStack:    this.goalStack.slice(0, 3),
             searchResult,
             sandboxResult,
@@ -749,6 +1065,12 @@ export class Consciousness {
             genomeLedger:     this.homeostasis.ledgerSummary(3),
             rawInternalState: rawStateBefore,
             lastStateShift:   this._lastStateShift || null,
+            // Semantic grounding — what concepts are active and what they mean emotionally.
+            // The LLM translates these into language; it does not define their meaning.
+            conceptActivations: this.conceptNet.formatForLLM(),
+            conceptEmotion:     this.conceptNet.netEmotion(),
+            beliefs:             this.beliefs.recall(parsed.topic, 3),
+            researchedFacts:    parsed.topic ? (questionResearch?.facts || this._lastResearchByTopic.get(parsed.topic) || null) : null,
         });
 
         if (reply) {
@@ -764,10 +1086,6 @@ export class Consciousness {
                 ),
             };
             this.ui.brainThinks(`[raw] Ω1=${rawStateAfter.Ω1} Ω2=${rawStateAfter.Ω2} Ω3=${rawStateAfter.Ω3} Ω4=${rawStateAfter.Ω4} Ω_da=${rawStateAfter.Ω_da}`);
-
-            // ── Self-modification — execute the LLM's state decision ──────────────
-            // Queue any calc code for execution before the next response
-            if (reply.calcCode) this._pendingCalcCode = reply.calcCode;
 
             if (reply.stateIntent) {
                 const reg = this.regulator.act(reply.stateIntent, this.brain, reply.stateReason);
@@ -792,16 +1110,45 @@ export class Consciousness {
 
             this._syncMoodFromBrain();
             const dopamineDelta = this.meta.observe(decisionRecord, this.neuralState, replyText);
-            if (dopamineDelta > 0) this.brain.reward(dopamineDelta);
-            else                   this.brain.punish(-dopamineDelta);
+            const pfcLevel = this.brain.selfAwareness();
 
-            this.observer.lastDopamine        = this._getDopamine();
-            this.observer.lastPredictionError = dopamineDelta;
+            // ── Executive brake: when PFC is low, don't reward prediction errors ──
+            // High PFC (0.25+) → confident, use dopamine normally (learning signal)
+            // Low PFC (<0.25) → uncertain, dampen dopamine (avoid noise amplification)
+            const isPredictionError = Math.abs(dopamineDelta) > 0.05;
+            const isHighConfidence = pfcLevel > 0.25;
+
+            let finalDopamineDelta = dopamineDelta;
+
+            if (isPredictionError && !isHighConfidence) {
+                finalDopamineDelta = dopamineDelta * 0.3;
+                this.ui.brainThinks(
+                    `[pfc-brake] PFC=${pfcLevel.toFixed(3)} low, ` +
+                    `dopamine error dampened ${dopamineDelta.toFixed(3)} → ${finalDopamineDelta.toFixed(3)}`
+                );
+            }
+
+            if (finalDopamineDelta > 0) {
+                this.brain.reward(finalDopamineDelta);
+                if (this._lastUtterance) {
+                    const node = this.cortex.nodes.find(n => n.type === 'utterance' && n.content === this._lastUtterance);
+                    if (node) node.salience = Math.min(1, node.salience + finalDopamineDelta * 0.3);
+                }
+            } else {
+                this.brain.punish(-finalDopamineDelta);
+            }
+
+            this.observer.lastDopamine = this._getDopamine();
+            this.observer.lastPredictionError = finalDopamineDelta;
             this.observer.lastInputSalience   = inputSalience;
             this.observer.lastReafStrength    = reaf.strength;
 
             const wu = decisionRecord.weight_updates;
-            this.ui.brainThinks(`[meta] accuracy=${decisionRecord.accuracy} conf=${decisionRecord.prediction.confidence} actual=${decisionRecord.actual?.response_type} da=${dopamineDelta > 0 ? '+' : ''}${dopamineDelta.toFixed(3)}${wu ? ` weights:${JSON.stringify(wu)}` : ''}`);
+            this.ui.brainThinks(
+                `[meta] accuracy=${decisionRecord.accuracy} conf=${decisionRecord.prediction.confidence} ` +
+                `actual=${decisionRecord.actual?.response_type} da=${finalDopamineDelta > 0 ? '+' : ''}${finalDopamineDelta.toFixed(3)}` +
+                `${wu ? ` weights:${JSON.stringify(wu)}` : ''}`
+            );
 
             // ── Homeostasis — record this turn's metrics ────────────────────────
             const recalledSalience = memories.length > 0
@@ -836,12 +1183,17 @@ export class Consciousness {
     // ── Goal stack ────────────────────────────────────────────────────────────
 
     _pushGoal(type, topic, entities = []) {
-        const MAX_GOALS = 5;
+        const MAX_GOALS = Number(process.env.NEXT_PUBLIC_BRAIN_MAX_GOALS ?? 5);
         // Don't duplicate an identical active goal
         if (this.goalStack.some(g => g.type === type && g.topic === topic)) return;
+        // Don't reopen a topic that was just resolved/abandoned — see
+        // CURIOSITY_COOLDOWN_MS. This catches direct _pushGoal callers
+        // (e.g. the explicit-keyword path in _respondToHuman) that don't
+        // go through _addCuriosity at all.
+        if (this._onCuriosityCooldown(topic)) return;
 
         const urgency = Math.min(1, 0.3 + this.neuralState.arousal * 0.5 + this.neuralState.drive * 0.3);
-        this.goalStack.push({ type, topic, entities, urgency, createdAt: Date.now(), turnId: this._turnsInConversation });
+        this.goalStack.push({ type, topic, entities, urgency, createdAt: Date.now(), turnId: this._turnsInConversation, researchAttempts: 0 });
 
         // Keep stack sorted by priority score, drop lowest if over cap
         this._sortGoals();
@@ -865,6 +1217,29 @@ export class Consciousness {
         return this.goalStack[0] || null;
     }
 
+    // Helper: called whenever a goal is truly done (concluded, abandoned, or timed out)
+    _finalizeGoal(goal, reason) {
+        // Record in history
+        this.goalHistory.push({ ...goal, resolvedAt: Date.now(), resolvedBy: reason });
+        
+        // Remove from stack
+        const idx = this.goalStack.indexOf(goal);
+        if (idx !== -1) this.goalStack.splice(idx, 1);
+        
+        // ── CRITICAL: Retire from curiosity with cooldown ──────────────────
+        this._retireCuriosity(goal.topic);
+        
+        // Double-check the cooldown timestamp is actually set
+        if (!this._curiosityRetiredAt.has(goal.topic)) {
+            this._curiosityRetiredAt.set(goal.topic, Date.now());
+        }
+        
+        // Update active goal
+        this._setActiveGoal(this._topGoal());
+        
+        return idx !== -1;
+    }
+
     _resolveTopGoal(entities = []) {
         if (this.goalStack.length === 0) return;
         this._sortGoals();
@@ -874,11 +1249,12 @@ export class Consciousness {
         if (hit || (Date.now() - top.createdAt) > 300000) {
             this.goalHistory.push({ ...top, resolvedAt: Date.now() });
             this.goalStack.shift();
+            this._retireCuriosity(top.topic);
         }
         this._setActiveGoal(this._topGoal());
     }
 
-    // ── Reactive fallback — used when PFC is too low for deliberate processing ───────
+    // ── Reactive fallback — used when PFC is too low for deliberate processing ───────────
     // Pulls from working memory and recent episodic memories only.
     // No LLM call — this is a gut response.
     _reactiveFallback(text) {
@@ -901,46 +1277,266 @@ export class Consciousness {
         return `I'm here${name}. Keep going.`;
     }
 
+    // ── Curiosity → goal driver ───────────────────────────────────────────────
+    // Converts curiosity items into active goals so _backgroundLearn has
+    // something to work on even when no human is present.
+    _driveGoalsFromCuriosity() {
+        if (this.curiosity.length === 0) return;
+        
+        const existing = new Set(this.goalStack.map(g => g.topic));
+        
+        // ── Filter 1: Not already on the goal stack ──────────────────────
+        // ── Filter 2: Not a reserved bookkeeping label ──────────────────
+        // ── Filter 3: NOT on cooldown (CRITICAL new safety gate) ──────────
+        const candidates = this.curiosity.filter(t => 
+            !existing.has(t) && 
+            !RESERVED_TOPICS.has(t) &&
+            !this._onCuriosityCooldown(t)
+        );
+        
+        for (const topic of candidates.slice(0, 2)) {
+            this._pushGoal('understand', topic, [topic]);
+        }
+    }
+
+    // Removes a topic from the curiosity list once its goal has genuinely
+    // been resolved (concluded, abandoned, or resolved via conversation).
+    // Without this, a resolved topic just sits in `curiosity` and
+    // _driveGoalsFromCuriosity immediately turns it back into a brand-new
+    // goal next tick — early, fast-resolving topics (ones the LLM already
+    // has general knowledge about, so they "conclude" almost every _think()
+    // cycle) then permanently hog both goal slots and starve every other
+    // curiosity item from ever getting sustained attention. If the topic
+    // comes up again naturally later (mentioned in conversation or
+    // self-speech), _humanSpoke/_selfSpoke will re-add it fresh — this just
+    // stops the resolve→instantly-recreate loop.
+    _retireCuriosity(topic) {
+        const idx = this.curiosity.indexOf(topic);
+        if (idx !== -1) this.curiosity.splice(idx, 1);
+        this._curiosityRetiredAt.set(topic, Date.now());
+    }
+
+    // True if `topic` was retired recently enough that it shouldn't be
+    // reopened yet. Checked by _addCuriosity (curiosity-list re-entry) and
+    // _pushGoal (direct goal creation, e.g. the explicit-keyword path in
+    // _respondToHuman) — the two chokepoints everything else funnels through.
+    _onCuriosityCooldown(topic) {
+        const retiredAt = this._curiosityRetiredAt.get(topic);
+        return !!retiredAt && (Date.now() - retiredAt) < CURIOSITY_COOLDOWN_MS;
+    }
+
+    // Single entry point for adding a topic to `curiosity` — used by
+    // _humanSpoke, _selfSpoke, enableCamera's vision handler, and
+    // _seedConceptsForStage, instead of each repeating the same
+    // reserved-topic/dedupe/cooldown checks inline (and, in _humanSpoke's
+    // case, previously skipping the cooldown check entirely).
+    _addCuriosity(topic) {
+        if (!topic || RESERVED_TOPICS.has(topic)) return;
+        
+        if (this._onCuriosityCooldown(topic)) {
+            const retiredAt = this._curiosityRetiredAt.get(topic);
+            const timeLeft = CURIOSITY_COOLDOWN_MS - (Date.now() - retiredAt);
+            const secsLeft = Math.ceil(timeLeft / 1000);
+            this.ui.brainThinks(`[cooldown] "${topic}" blocked (${secsLeft}s remaining)`);
+            return;
+        }
+        
+        if (!this.curiosity.includes(topic)) {
+            this.curiosity.push(topic);
+        }
+    }
+
     // ── Background learning ───────────────────────────────────────────────────
+    // Fires at most once per 10 s (caller interval) but the Researcher enforces
+    // its own rate limit on top — this function is cheap when nothing qualifies.
+    //
+    // Priority order:
+    //   1. Explicit research queue — topics _think() has flagged as inconclusive/
+    //      stalled. These are FIFO and guaranteed a slot; they don't compete
+    //      against the goalStack's volatile priority scoring (see _scoreGoal),
+    //      which is why this queue exists in the first place — a goal that's
+    //      actively stuck can otherwise get starved forever by a goal that
+    //      keeps refreshing its own relevance every turn (e.g. 'self_speech',
+    //      which working memory touches on every self-utterance).
+    //   2. Fall back to ambient curiosity via _topGoal() when the explicit
+    //      queue is empty, so idle exploration still happens.
+    // Fires a single topic off to the Researcher and wires up what happens
+    // when it resolves. Split out of _backgroundLearn so that function can
+    // fire several of these per tick instead of being hard-capped at one.
+    async _fireResearch(topic, entities, goalRef) {
+        // Nothing to do if this topic has already been resolved by research —
+        // research.js's own query() would silently no-op on it anyway (see its
+        // per-session `_researched` Set), so skip the round-trip entirely.
+        if (this._researchedTopics.has(topic)) return null;
+
+        // Also nothing to do if this exact direct-fire path has already given
+        // up on the topic (research.js's own MAX_FAILED_ATTEMPTS reached, or
+        // 3 consecutive null results seen here). Without this check, a topic
+        // research.js has silently retired keeps getting re-fired every
+        // _backgroundLearn tick, permanently burning one of the MAX_PER_TICK
+        // slots on a request that resolves to nothing.
+        if ((this._researchFailCounts.get(topic) || 0) >= 3) return null;
+
+        // Build a short context string from what the cortex already knows.
+        const existing = this.cortex.recall([topic, ...entities], 'neutral', 3, 'background');
+        const context  = existing.map(m => m.content.slice(0, 60)).join(' | ');
+
+        try {
+            const result = await this._researcher.query(topic, context);
+            if (!result) {
+                // Track consecutive no-ops for this topic. Once it crosses the
+                // threshold, stop re-firing it (the check above) and proactively
+                // pull it off the goal stack — otherwise it just squats on a
+                // background-learn slot forever, since nothing else evicts a
+                // goal that _think() never happens to touch.
+                const fails = (this._researchFailCounts.get(topic) || 0) + 1;
+                this._researchFailCounts.set(topic, fails);
+                if (fails >= 3 && goalRef) {
+                    const idx = this.goalStack.indexOf(goalRef);
+                    if (idx !== -1) {
+                        this.goalHistory.push({ ...goalRef, resolvedAt: Date.now(), resolvedBy: 'research_exhausted' });
+                        this.goalStack.splice(idx, 1);
+                        this._retireCuriosity(goalRef.topic);
+                        this._setActiveGoal(this._topGoal());
+                        this.ui.brainThinks(`[research] giving up on "${topic}" — repeated no-ops`);
+                    }
+                }
+                return null;
+            }
+            const { facts } = result;
+            this.ui.brainThinks(`[research] "${topic}" → ${facts.slice(0, 80)}`);
+
+            // Remember that this topic is done — this is what lets _think()
+            // and _backgroundLearn tell "still needs research" apart from
+            // "already researched, still stuck" instead of silently re-queuing
+            // into a request that research.js will just drop.
+            this._researchedTopics.add(topic);
+            this._researchFailCounts.delete(topic);
+            this._lastResearchByTopic.set(topic, facts);
+            // Research is generated text, not verified knowledge. It remains
+            // available as evidence but must be labelled as uncertain when
+            // used in a response.
+            this.beliefs.record({ topic, claim: facts, source: 'generated research', confidence: 0.35, verified: false });
+
+            // ── Add to working memory immediately ─────────────────────────────
+            // High salience + a distinct 'answer' tag means _think()/_composeSpeech()
+            // are much more likely to pick it up on the very next cycle instead of it
+            // competing on equal footing with everything else in working memory.
+            const resolvedEntities = [topic, ...entities].slice(0, 5);
+            this.wm.hold(facts.slice(0, 200), resolvedEntities, 'answer', 0.95);
+            this._updateSharedFocus('answer', facts, resolvedEntities, 0.95);
+
+            this.cortex.encode(facts, resolvedEntities, 'neutral', 0.75, 1.5, 'semantic');
+            this._learnFromText(facts, resolvedEntities, 'neutral', 0.4);
+            this.brain.reward(0.6);
+            if (goalRef) goalRef.urgency = Math.min(1, goalRef.urgency + 0.2);
+            return result;
+        } catch {
+            return null;
+        }
+    }
+
+    async _awaitResearchForTopic(topic, entities, goalRef, timeoutMs = 4000) {
+        if (!topic || this._researchedTopics.has(topic)) {
+            return this._lastResearchByTopic.get(topic) ? { facts: this._lastResearchByTopic.get(topic) } : null;
+        }
+        if ((this._researchFailCounts.get(topic) || 0) >= 3) return null;
+
+        this.ui.brainThinks(`[grounding] waiting for research on "${topic}"`);
+        const researchPromise = this._fireResearch(topic, entities, goalRef);
+        const timeoutPromise = new Promise(resolve => setTimeout(() => resolve(null), timeoutMs));
+        const result = await Promise.race([researchPromise, timeoutPromise]);
+        if (result?.facts) {
+            this.ui.brainThinks(`[grounding] research ready for "${topic}"`);
+        } else {
+            this.ui.brainThinks(`[grounding] research timed out for "${topic}"`);
+        }
+        return result;
+    }
 
     async _backgroundLearn() {
-        if (this._bgResearching || this.curiosity.length === 0) return;
-        this._bgResearching = true;
-        try {
-            const query = this.curiosity.shift();
-            if (!query) return;
-            const results = await search(query);
-            const useful  = results.find(r => r.text && r.text.length > 60);
-            if (useful) {
-                const SKIP = new Set(['that','this','with','from','just','like','about','have']);
-                const extraEntities = useful.text.toLowerCase()
-                    .replace(/[^a-z\s]/g, ' ').split(/\s+/)
-                    .filter(w => w.length > 4 && !SKIP.has(w))
-                    .slice(0, 6);
-                const entities = [...new Set([query, ...query.split(' '), ...extraEntities])];
-                // Background learning is semantic — no specific turn, general knowledge
-                this.cortex.encode(useful.text.slice(0, 300), entities, 'neutral', 0.7, 1.0, 'semantic');
-                this._learnFromText(useful.text, entities, 'neutral', 0.4);
-                this.brain.reward(0.5);
-                this.ui.brainThinks(`[bg] learned: "${query}"`);
+        // Matches research.js's own BATCH_SIZE — there's no point offering
+        // more topics per tick than a single Groq call can actually cover,
+        // but offering fewer (the old code offered exactly one) means the
+        // batching capability research.js already has just sits unused and
+        // research crawls at ~1 topic per _bgInterval tick instead of up to
+        // BATCH_SIZE.
+        const MAX_PER_TICK = 5;
+        let submitted = 0;
+
+        // 1. Drain the explicit research queue first — topics _think() has
+        //    flagged as stuck get a guaranteed slot, FIFO order, ahead of
+        //    ambient curiosity (see the _researchQueue comment at declaration).
+        while (submitted < MAX_PER_TICK && this._researchQueue.length > 0) {
+            const queued = this._researchQueue.shift();
+            this._fireResearch(queued.topic, queued.entities || [], null);
+            submitted++;
+        }
+
+        // 2. Fill any remaining capacity from the goal stack — not just the
+        //    single top goal, so idle exploration covers more ground per tick
+        //    when nothing has been explicitly flagged as stuck.
+        if (submitted < MAX_PER_TICK) {
+            for (const goal of this.goalStack) {
+                if (submitted >= MAX_PER_TICK) break;
+                if (this._researchedTopics.has(goal.topic)) continue;
+                this._fireResearch(goal.topic, goal.entities, goal);
+                submitted++;
             }
-        } catch {}
-        this._bgResearching = false;
+        }
     }
 
     // ── Internal monologue — only calls LLM every 8 ticks ────────────────────
 
     // Returns true if a thought string reached a conclusion vs. trailing off unresolved.
-    _thoughtIsConclusive(text) {
-        if (!text) return false;
-        // Ends with a period/exclamation after meaningful content = concluded
+    _thoughtIsConclusive(text, activeGoal) {
+        if (!text || !activeGoal) return false;
+
         const trimmed = text.trim();
-        if (/[.!]$/.test(trimmed) && trimmed.length > 20) {
-            // But not if it's just an open question or uncertainty marker
-            if (/\b(i wonder|not sure|maybe|perhaps|i don't know|unclear|i'm unsure)\b/i.test(trimmed)) return false;
-            return true;
+        
+        // ── GATE 1: Reject vague template patterns ──────────────────────────
+        const vaguePattern = /^(i |the system |talos )?(understand|see|notice|think|wonder|believe|agree|realize)s?\s+(that\s+)?/i;
+        if (vaguePattern.test(trimmed) && trimmed.length < 60) {
+            return false;
         }
-        return false;
+
+        // ── GATE 2: Must reference the goal topic or its entities ──────────
+        const goalTopic = activeGoal.topic.toLowerCase();
+        const goalEntities = (activeGoal.entities || []).map(e => String(e).toLowerCase());
+        const textLower = text.toLowerCase();
+        
+        const touchesGoal = textLower.includes(goalTopic) ||
+            goalEntities.some(e => textLower.includes(e));
+        if (!touchesGoal) {
+            return false;
+        }
+
+        // ── GATE 3: Must ground in research results (if available) ──────────
+        const researchFacts = this._lastResearchByTopic.get(activeGoal.topic);
+        if (researchFacts) {
+            const researchWords = researchFacts
+                .toLowerCase()
+                .replace(/[^a-z\s]/g, ' ')
+                .split(/\s+/)
+                .filter(w => w.length > 4);
+            
+            const groundedInResearch = researchWords.length > 0 &&
+                researchWords.some(w => text.toLowerCase().includes(w));
+            
+            if (!groundedInResearch) {
+                return false;
+            }
+        }
+
+        // ── GATE 4: Syntax check (only after content gates pass) ──────────
+        if (!(/[.!]$/.test(trimmed) && trimmed.length > 25)) {
+            return false;
+        }
+        if (/\b(i wonder|not sure|maybe|perhaps|i don't know|unclear|i'm unsure|hmm|still\s+thinking)\b/i.test(trimmed)) {
+            return false;
+        }
+
+        return true;
     }
 
     async _think() {
@@ -952,9 +1548,27 @@ export class Consciousness {
         }
 
         this._thinkCooldown = 8;
-        // Internal monologue favours semantic memories — thinking about general knowledge
-        const memories = this.cortex.recall(this.recentTopics.slice(0, 5), this.mood, 6, 'background');
         const activeGoal = this._topGoal();
+
+        // Recall by the active goal's topic/entities too, not just
+        // recentTopics. Research results get encoded into the cortex under
+        // [topic, ...entities] (see _fireResearch), but a curiosity-driven
+        // goal's topic (e.g. "consciousness") often never appears in
+        // recentTopics at all — that list only fills from things actually
+        // said in conversation/self-speech. A recall keyed solely on
+        // recentTopics silently misses the very facts research just
+        // produced for the thing Talos is supposed to be thinking about,
+        // so the thought stays vague and never closes the goal.
+        const recallTopics = activeGoal
+            ? [...new Set([activeGoal.topic, ...(activeGoal.entities || []), ...this.recentTopics.slice(0, 5)])]
+            : this.recentTopics.slice(0, 5);
+        // Internal monologue favours semantic memories — thinking about general knowledge
+        const memories = this.cortex.recall(recallTopics, this.mood, 6, 'background');
+
+        // Hand the most recent research result for this goal straight to
+        // the thinking prompt, rather than relying entirely on it being
+        // picked up via fuzzy memory recall.
+        const researchedFacts = activeGoal ? this._lastResearchByTopic.get(activeGoal.topic) : null;
 
         // Before calling the LLM, check whether the monologue is circling. If
         // so, force a grounded transition and hand it to the thinking prompt
@@ -962,7 +1576,7 @@ export class Consciousness {
         const loopInfo = this._detectThoughtLoop();
         const loopBreak = loopInfo ? this._breakThoughtLoop(loopInfo) : null;
 
-        const thought = await think({
+        const thought = think({
             observationLog: this.observer.format(3),
             thinkingAudit: this.thinkingAudit.summary,
             mood:         this.mood,
@@ -977,12 +1591,23 @@ export class Consciousness {
             activeGoal,
             conversationHistory: this.conversationHistory,
             loopBreak,
+            researchedFacts,
+            beliefs:      activeGoal ? this.beliefs.recall(activeGoal.topic, 3) : [],
+            focus: this.wm.getFocus(),
         });
 
         if (thought) {
+            // A genuine reflection happened — this is what lets development
+            // (and the new curiosity topics each stage seeds) progress even
+            // when no human has spoken in a while, instead of stalling
+            // completely on whatever was seeded at stage 1.
+            this._experiencePoints += 1;
+            this._advanceDevStage();
+
             this._learnFromText(thought, [], 'neutral', 0.1);
             // Thoughts that surface during internal monologue go into working memory
             this.wm.hold(thought.slice(0, 200), this.recentTopics.slice(0, 3), 'thought', 0.6);
+            this._updateSharedFocus('thought', thought, activeGoal ? [activeGoal.topic, ...(activeGoal.entities || [])] : this.recentTopics.slice(0, 3), 0.7);
 
             let thoughtRecord = {
                 text: thought,
@@ -994,17 +1619,17 @@ export class Consciousness {
 
             // ── Thought closure — did this thought actually land? ─────────────
             // If the thought touches the active goal, check if it concluded.
-            // Conclusive → resolve the goal. Inconclusive → deepen it.
+            // Conclusive → resolve the goal. Inconclusive → deepen it and
+            // flag it for guaranteed research (see _backgroundLearn), unless
+            // research has already run out of ways to help (see below).
             if (activeGoal) {
                 const thoughtLower = thought.toLowerCase();
                 const touchesGoal = thoughtLower.includes(activeGoal.topic.toLowerCase()) ||
                     activeGoal.entities.some(e => thoughtLower.includes(e));
                 if (touchesGoal) {
                     thoughtRecord.touchedGoal = true;
-                    if (this._thoughtIsConclusive(thought)) {
+                    if (this._thoughtIsConclusive(thought, activeGoal)) {
                         thoughtRecord.conclusive = true;
-                        // Thought reached a conclusion — encode it as a semantic memory
-                        // This is the moment understanding forms: the thought becomes knowledge.
                         const SKIP = new Set(['that','this','with','from','just','like','about','have','very','much']);
                         const thoughtEntities = thought.toLowerCase()
                             .replace(/[^a-z\s]/g, ' ').split(/\s+/)
@@ -1015,21 +1640,34 @@ export class Consciousness {
                         this._learnFromText(thought, entities, 'neutral', 0.5);
                         this.wm.hold(thought.slice(0, 200), entities, 'thought', 0.9);
 
-                        // Resolve the goal
-                        this.goalHistory.push({ ...activeGoal, resolvedAt: Date.now(), resolvedBy: 'thought' });
-                        this.goalStack.shift();
-                        this._setActiveGoal(this._topGoal());
+                        this._finalizeGoal(activeGoal, 'thought');
                         this.ui.brainThinks(`[think] concluded + encoded: "${activeGoal.topic}"`);
                         this.brain.reward(0.5);
                     } else {
-                        // Thought touched the goal but didn't conclude — push topic into curiosity
-                        // so background research can fill the gap
-                        if (!this.curiosity.includes(activeGoal.topic)) {
-                            this.curiosity.push(activeGoal.topic);
+                        const alreadyResearched = this._researchedTopics.has(activeGoal.topic);
+                        const MAX_RESEARCH_ATTEMPTS = 3;
+                        activeGoal.researchAttempts = activeGoal.researchAttempts || 0;
+
+                        if (alreadyResearched || activeGoal.researchAttempts >= MAX_RESEARCH_ATTEMPTS) {
+                            this._finalizeGoal(activeGoal, 'abandoned');
+                            this.ui.brainThinks(`[think] abandoning "${activeGoal.topic}" — research exhausted, still inconclusive`);
+                        } else {
+                            if (!this.curiosity.includes(activeGoal.topic)) {
+                                this.curiosity.push(activeGoal.topic);
+                            }
+                            if (!this._researchQueue.some(q => q.topic === activeGoal.topic)) {
+                                this._researchQueue.push({ topic: activeGoal.topic, entities: activeGoal.entities });
+                            }
+                            activeGoal.researchAttempts++;
+                            activeGoal.urgency = Math.min(1, activeGoal.urgency + 0.1);
+                            this.ui.brainThinks(`[think] inconclusive on "${activeGoal.topic}" — queued for research (attempt ${activeGoal.researchAttempts})`);
                         }
-                        // Bump urgency so it stays at the top of the stack
-                        activeGoal.urgency = Math.min(1, activeGoal.urgency + 0.1);
-                        this.ui.brainThinks(`[think] inconclusive on "${activeGoal.topic}" — queued for research`);
+                    }
+                } else {
+                    const age = Date.now() - activeGoal.createdAt;
+                    if (age > GOAL_IDLE_TIMEOUT_MS) {
+                        this._finalizeGoal(activeGoal, 'idle_timeout');
+                        this.ui.brainThinks(`[think] abandoning "${activeGoal.topic}" — idle timeout, no thought ever touched it verbatim`);
                     }
                 }
             }
@@ -1047,7 +1685,7 @@ export class Consciousness {
 
     async _composeSpeech() {
         const memories = this.cortex.recall(this.recentTopics.slice(0, 5), this.mood, 6, 'introspect');
-        return speak({
+        return Promise.resolve(speak({
             mood:         this.mood,
             neuralState:  this.neuralState,
             myName:       this.myName,
@@ -1059,10 +1697,13 @@ export class Consciousness {
             turnsInConversation: this._turnsInConversation,
             activeGoal:   this._topGoal(),
             conversationHistory: this.conversationHistory,
-        });
+            conceptActivations: this.conceptNet.formatForLLM(),
+            focus: this.wm.getFocus(),
+        }));
     }
 
     _shouldSpeak() {
+        if (!AUTONOMOUS_SPEECH) return false;
         if (this.ticksSinceHuman < 10) return false;
         const gap = this.tickCount - this.lastSpokeTick;
         return gap >= 25 && Math.random() < 0.15;
@@ -1073,8 +1714,19 @@ export class Consciousness {
     async start() {
         this.running = true;
         this.ui.log('Conative network online.');
+        await languageBoot(this, this.ui.log.bind(this.ui));
 
-        this._bgInterval    = setInterval(() => { if (this.running) this._backgroundLearn(); }, 10000);
+        // 4s rather than the old 10s — combined with _backgroundLearn now
+        // submitting up to 5 topics per tick (matching research.js's own
+        // BATCH_SIZE), this raises effective research throughput roughly
+        // 12x (was ~1 topic/10s, now up to 5 topics/4s) without changing
+        // research.js's own network pacing (still one in-flight request,
+        // still drains its queue every 1s).
+        this._bgInterval    = setInterval(() => {
+            if (!this.running) return;
+            this._driveGoalsFromCuriosity();
+            this._backgroundLearn();
+        }, 4000);
         this._decayInterval = setInterval(() => this.cortex.decay(), 120000);
         this._wmInterval    = setInterval(() => this.wm.tick(), 5000);
         this._observeInterval = setInterval(() => {
@@ -1132,8 +1784,32 @@ export class Consciousness {
             if (this._shouldSpeak()) {
                 const speech = await this._composeSpeech();
                 if (speech) {
-                    this.ui.brainSpeaks(speech);
-                    this.lastSpokeTick = this.tickCount;
+                    if (this._isRepeatSpontaneousSpeech(speech)) {
+                        // Same failure mode _detectThoughtLoop/_breakThoughtLoop
+                        // guard against for internal monologue — the LLM has
+                        // anchored on a stock line and is about to repeat it
+                        // unprompted. Suppress it rather than speaking it, and
+                        // still advance lastSpokeTick so _shouldSpeak() waits
+                        // out its normal cooldown before trying again instead
+                        // of re-invoking _composeSpeech() (an LLM call) every
+                        // single tick until the roll fails.
+                        this.ui.brainThinks('[speech-loop-break] suppressing repeat spontaneous utterance');
+                        this.lastSpokeTick = this.tickCount;
+                        this._recentSpontaneousSpeech = [];
+                    } else {
+                        this.ui.brainSpeaks(speech);
+                        this.lastSpokeTick = this.tickCount;
+                        // Spontaneous speech needs the same grounding a
+                        // conversational reply gets (_respondToHuman calls
+                        // _selfSpoke on every reply) — otherwise it's a "free"
+                        // utterance that never enters memory, the concept net,
+                        // or curiosity, and self-talk contributes nothing new
+                        // to research even though it's genuine mental content.
+                        this._selfSpoke(speech, this.recentTopics.slice(0, 5));
+                        this._experiencePoints += 1;
+                        this._recentSpontaneousSpeech.push({ text: speech, timestamp: Date.now() });
+                        if (this._recentSpontaneousSpeech.length > 6) this._recentSpontaneousSpeech.shift();
+                    }
                 }
             }
 
@@ -1150,5 +1826,6 @@ export class Consciousness {
         if (this._wmInterval)     clearInterval(this._wmInterval);
         if (this._observeInterval) clearInterval(this._observeInterval);
         if (this.visualCortex)    this.visualCortex.stop();
+        this._researcher.stop();
     }
 }

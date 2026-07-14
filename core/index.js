@@ -6,7 +6,7 @@ import { saveSnapshot, loadSnapshot, saveState, loadState } from './snapshot.js'
 
 export default function bootBrain(){
     const brain = new Brain();
-    brain.start(1000);
+    brain.start(Number(process.env.NEXT_PUBLIC_BRAIN_SPEED ?? 10));
 
     let consciousness;
 

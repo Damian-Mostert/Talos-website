@@ -4,7 +4,7 @@ import { NeuralEngine } from './engine.js';
 // Adjust this to control total RAM used by the brain snapshot.
 // 1.82 GB = baseline (2.42M neurons). Scale is linear.
 // With 16GB RAM + Ollama 3.2 (~2GB): 4–6 GB is comfortable.
-const BRAIN_SIZE_GB = 0.3;  // 1.82 GB = baseline (2.42M neurons). Scale is linear.
+const BRAIN_SIZE_GB = Number(process.env.NEXT_PUBLIC_BRAIN_SIZE ?? 0.1);  // 1.82 GB = baseline (2.42M neurons). Scale is linear.
 const SCALE = BRAIN_SIZE_GB / 1.82;
 
 function s(n) { return Math.round(n * SCALE / 1000) * 1000; } // scale + round to nearest 1k
@@ -43,6 +43,24 @@ export class Brain {
         this._baseline    = new Float32Array(this.layout.association.size);
         this._baselineAlpha = 0.005;
 
+        // Rolling per-neuron baseline for reafference() — mirrors the
+        // approach _baseline/_baselineAlpha already use for novelty() above.
+        // reafference() used to read raw |potential| directly, with no
+        // baseline correction. Because association potentials stay
+        // chronically elevated from continuous cross-region pulsing (visual/
+        // sensory/thalamus/hippocampus/prefrontal all feed it every tick, and
+        // nothing here decays it back toward zero), the raw magnitude of the
+        // top-N neurons was reliably large enough that
+        // tanh((sum/filled) * 5) clipped to 1.000 at 3 decimal places on
+        // almost every call — regardless of whether anything about *this*
+        // tick's reafference was actually novel. Tracking a slower-moving
+        // baseline per neuron and reading the deviation from it (same trick
+        // as novelty(), just scoped to reafference's own array so the two
+        // don't fight over the same state) lets strength actually vary
+        // instead of pinning at ceiling.
+        this._reafBaseline = new Float32Array(this.layout.association.size);
+        this._reafBaselineAlpha = 0.02;
+
         // Emotional state — updated by emotionalState() each cycle
         this._valence  = 0;   // -1 (negative) to +1 (positive)
         this._arousal  = 0;   // 0 (calm) to 1 (activated)
@@ -69,7 +87,7 @@ export class Brain {
         const dst = this.layout[dstName];
         const [wMin, wMax] = weightRange;
         // wiring phases that freeze the process when creating a new brain from scratch.
-        const MAX_CONNECTIONS = 100_100;
+        const MAX_CONNECTIONS = Number(process.env.NEXT_PUBLIC_BRAIN_MAX_CONNECTIONS ?? 50_000);
         const sampleSize = Math.min(MAX_CONNECTIONS, Math.floor(src.size * density));
         for (let k = 0; k < sampleSize; k++) {
             const i = src.start + Math.floor(Math.random() * src.size);
@@ -561,19 +579,38 @@ export class Brain {
         return this.engine.activation(start, end);
     }
 
+    // Deviation-from-baseline version of reafference. topN neurons are picked
+    // by |potential − rolling baseline| rather than raw |potential| — see the
+    // _reafBaseline/_reafBaselineAlpha comment in the constructor for why raw
+    // magnitude was saturating strength at ~1.000 on nearly every call. The
+    // baseline itself decays slowly (alpha = 0.02, faster than novelty()'s
+    // 0.005 since reafference is meant to track shorter-timescale settling,
+    // not long-run drift), so a genuinely elevated-but-stable region reads as
+    // low reafference once it's been elevated for a while, while an actual
+    // fresh spike still reads as high.
     reafference(topN = 20) {
         const { start, end, size } = this.layout.association;
         const step   = Math.max(1, Math.floor(size / 10000));
         const pot    = this.engine.potential;
+        const base   = this._reafBaseline;
+        const alpha  = this._reafBaselineAlpha;
         const topIdx = new Int32Array(topN).fill(-1);
         const topVal = new Float32Array(topN);
         let minVal = 0, minPos = 0, filled = 0;
 
         for (let i = start; i < end; i += step) {
-            const v = pot[i] < 0 ? -pot[i] : pot[i];
+            const idx = i - start;
+            const raw = pot[i];
+            const dev = raw - base[idx];
+            const v   = dev < 0 ? -dev : dev;
+            // Update the baseline every sampled neuron regardless of whether
+            // it makes the top-N this tick — otherwise unsampled ticks would
+            // let stale baselines drift further from reality every time a
+            // neuron happens not to be novel enough to be tracked.
+            base[idx] = base[idx] * (1 - alpha) + raw * alpha;
             if (v === 0) continue;
             if (filled < topN) {
-                topIdx[filled] = i - start;
+                topIdx[filled] = idx;
                 topVal[filled] = v;
                 filled++;
                 if (filled === topN) {
@@ -581,7 +618,7 @@ export class Brain {
                     for (let k = 1; k < topN; k++) if (topVal[k] < minVal) { minVal = topVal[k]; minPos = k; }
                 }
             } else if (v > minVal) {
-                topIdx[minPos] = i - start;
+                topIdx[minPos] = idx;
                 topVal[minPos] = v;
                 minVal = topVal[0]; minPos = 0;
                 for (let k = 1; k < topN; k++) if (topVal[k] < minVal) { minVal = topVal[k]; minPos = k; }

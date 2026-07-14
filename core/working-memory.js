@@ -10,6 +10,19 @@ const REHEARSE_BOOST = 10000; // rehearsal extends lifetime by 10s
 export class WorkingMemory {
     constructor() {
         this.slots = []; // { content, entities, type, strength, expiresAt }
+        this.focus = null; // { topic, entities, source, strength, updatedAt }
+    }
+
+    _normalizeEntities(entities = []) {
+        return (entities || [])
+            .filter(e => typeof e === 'string')
+            .map(e => e.toLowerCase())
+            .filter(Boolean);
+    }
+
+    _expireFocus(now = Date.now()) {
+        if (!this.focus) return;
+        if (now - this.focus.updatedAt > DECAY_MS) this.focus = null;
     }
 
     // ── Hold something in attention ───────────────────────────────────────────
@@ -29,7 +42,7 @@ export class WorkingMemory {
 
         const item = {
             content,
-            entities: entities.filter(e => typeof e === 'string').map(e => e.toLowerCase()).filter(Boolean),
+            entities: this._normalizeEntities(entities),
             type,     // 'input' | 'thought' | 'goal' | 'fact'
             strength,
             expiresAt: Date.now() + DECAY_MS,
@@ -44,14 +57,43 @@ export class WorkingMemory {
         }
     }
 
+    // ── Set the current shared attention focus ──────────────────────────────
+    setFocus(topic, entities = [], source = 'thought', strength = 1.0) {
+        if (!topic || typeof topic !== 'string') return null;
+        const normalizedTopic = topic.toLowerCase();
+        const focusEntities = [...new Set(this._normalizeEntities([normalizedTopic, ...entities]))];
+        this.focus = {
+            topic: normalizedTopic,
+            entities: focusEntities,
+            source,
+            strength: Math.min(1, Math.max(0.1, strength)),
+            updatedAt: Date.now(),
+        };
+        return this.focus;
+    }
+
+    getFocus() {
+        this._expireFocus();
+        return this.focus;
+    }
+
+    clearFocus() {
+        this.focus = null;
+    }
+
     // ── Rehearse items matching entities — keeps them alive ──────────────────
     rehearse(entities = []) {
-        const query = entities.filter(e => typeof e === 'string').map(e => e.toLowerCase());
+        const query = this._normalizeEntities(entities);
         for (const slot of this.slots) {
             if (slot.entities.some(e => query.includes(e))) {
                 slot.expiresAt = Date.now() + REHEARSE_BOOST;
                 slot.strength  = Math.min(1, slot.strength + 0.1);
             }
+        }
+
+        if (this.focus && this.focus.entities.some(e => query.includes(e))) {
+            this.focus.updatedAt = Date.now();
+            this.focus.strength = Math.min(1, this.focus.strength + 0.1);
         }
     }
 
@@ -59,6 +101,7 @@ export class WorkingMemory {
     tick() {
         const now = Date.now();
         this.slots = this.slots.filter(s => s.expiresAt > now);
+        this._expireFocus(now);
     }
 
     // ── Get current contents, strongest first ────────────────────────────────
@@ -79,6 +122,7 @@ export class WorkingMemory {
     // ── Clear everything — e.g. after a salience interrupt ───────────────────
     flush() {
         this.slots = [];
+        this.focus = null;
     }
 
     get size() { return this.slots.length; }

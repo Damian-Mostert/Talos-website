@@ -8,6 +8,7 @@ type Needs = { hunger: number; energy: number; joy: number };
 type Neural = { valence: number; arousal: number; drive: number; norepinephrine: number };
 type MotorIntent = { dx: number; dy: number; strength: number } | null;
 
+const BODY_RADIUS = 0.09;
 const MOVE_ACCEL = 0.017;
 const MOVE_DRAG = 0.88;
 const MAX_SPEED = 0.16;
@@ -206,8 +207,8 @@ export default function TalosWorldPage() {
       const dy = Math.abs(body.y - pet.y);
       const POS_THRESHOLD = 0.02;
       if (pet.speed < MIN_MOTION || dx > POS_THRESHOLD || dy > POS_THRESHOLD) {
-        pet.x = Math.max(0, Math.min(1, body.x));
-        pet.y = Math.max(0, Math.min(1, body.y));
+        pet.x = Math.max(BODY_RADIUS, Math.min(1 - BODY_RADIUS, body.x));
+        pet.y = Math.max(BODY_RADIUS, Math.min(1 - BODY_RADIUS, body.y));
       }
     }
 
@@ -670,11 +671,25 @@ export default function TalosWorldPage() {
         speed = MAX_SPEED;
       }
 
-      pet.x = Math.max(0, Math.min(1, pet.x + pet.vx));
-      pet.y = Math.max(0, Math.min(1, pet.y + pet.vy));
+      pet.x += pet.vx;
+      pet.y += pet.vy;
 
-      if (pet.x <= 0 || pet.x >= 1) pet.vx *= -0.35;
-      if (pet.y <= 0 || pet.y >= 1) pet.vy *= -0.35;
+      if (pet.x < BODY_RADIUS) {
+        pet.x = BODY_RADIUS;
+        pet.vx *= -0.35;
+      }
+      if (pet.x > 1 - BODY_RADIUS) {
+        pet.x = 1 - BODY_RADIUS;
+        pet.vx *= -0.35;
+      }
+      if (pet.y < BODY_RADIUS) {
+        pet.y = BODY_RADIUS;
+        pet.vy *= -0.35;
+      }
+      if (pet.y > 1 - BODY_RADIUS) {
+        pet.y = 1 - BODY_RADIUS;
+        pet.vy *= -0.35;
+      }
 
       pet.speed = speed;
       if (speed > MIN_MOTION) pet.heading = Math.atan2(pet.vy, pet.vx);

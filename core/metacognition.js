@@ -102,9 +102,22 @@ export class Metacognition {
             updates.emotion_cue = `+${LR} (valence miss)`;
         }
 
+        // Only report — and only actually apply — this update if it would
+        // change the weight. Math.min(1, ...) silently caps novelty_cue at
+        // 1.0 once it saturates, but this branch used to log the same
+        // "+0.05 (...)" string every time regardless of whether the weight
+        // actually moved. Once saturated, that made a genuinely stuck
+        // learner look like it was still adapting turn after turn. This was
+        // a symptom, not the root cause (see the response_type fallback fix
+        // below), but it's still worth not misreporting a no-op as a change.
         if (state_before.reaf > 0.4 && record.error.response_type === 1) {
-            this.weights.novelty_cue = Math.min(1, this.weights.novelty_cue + LR);
-            updates.novelty_cue = `+${LR} (response_type miss with high reaf)`;
+            const next = Math.min(1, this.weights.novelty_cue + LR);
+            if (next !== this.weights.novelty_cue) {
+                this.weights.novelty_cue = next;
+                updates.novelty_cue = `+${LR} (response_type miss with high reaf)`;
+            } else {
+                updates.novelty_cue = `+0 (already saturated at ${next})`;
+            }
         }
 
         if (state_before.arousal > 0.4 && record.error.ne > 0.4) {
@@ -166,9 +179,25 @@ export class Metacognition {
         if (parsed.intent === 'question')  return 'answer';
         if (parsed.intent === 'teaching')  return 'integrate';
         if (parsed.intent === 'greeting')  return 'social';
-        // Novelty + drive → explore; otherwise reflect
+        // Novelty + drive → explore; otherwise fall through to 'integrate'.
+        //
+        // This used to fall through to 'reflect' here. That created a
+        // structural mismatch with _classifyResponse() below: that function
+        // only returns 'explore' / 'social' / 'answer' / 'reflect' when the
+        // reply text hits one of four specific patterns (a question mark, a
+        // greeting word, causal language, or "i think/i feel/i notice"); any
+        // reply that hits none of those — which is most plain-prose replies
+        // to non-teaching, non-greeting, non-question turns — falls through
+        // to its own default of 'integrate'. So for every turn whose intent
+        // wasn't 'question'/'teaching'/'greeting' and wasn't high-arousal
+        // exploration, prediction said 'reflect' while the classifier's
+        // matching default said 'integrate' — a guaranteed miss every time,
+        // regardless of what the brain actually did. That's what was driving
+        // the "predicted varies, actual is always integrate" pattern and the
+        // resulting endless identical novelty_cue weight update. Matching
+        // this fallback to the classifier's own default closes that gap.
         if (arousal > 0.5 * (1 / this.weights.arousal_cue) && drive > 0.4 * (1 / this.weights.drive_cue)) return 'explore';
-        return 'reflect';
+        return 'integrate';
     }
 
     _classifyResponse(text) {

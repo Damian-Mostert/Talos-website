@@ -8,11 +8,12 @@
 //   episodic   — tied to a specific conversation turn, decay fast (time-bound events)
 //   semantic   — general knowledge and facts, decay slowly (consolidated understanding)
 //   procedural — learned interaction patterns, decay very slowly (habits)
+//   utterance  — speech patterns heard or produced, decay very slowly, recalled during speech
 
 const DECAY_RATE        = 0.0002;
 const CONSOLIDATE_BOOST = 0.15;
 const PRUNE_THRESHOLD   = 0.05;
-const MAX_MEMORIES      = 500;
+const MAX_MEMORIES      = 2500;
 
 // Episodic memories decay faster — they're time-bound events, not general knowledge
 const EPISODIC_DECAY_MULT   = 1.8;
@@ -20,10 +21,13 @@ const EPISODIC_DECAY_MULT   = 1.8;
 const SEMANTIC_DECAY_MULT   = 0.6;
 // Procedural memories are the most stable — learned patterns of interaction
 const PROCEDURAL_DECAY_MULT = 0.3;
+// Utterance memories decay like procedural — speech patterns are habits
+const UTTERANCE_DECAY_MULT  = 0.3;
 
 function decayMult(type) {
     if (type === 'episodic')   return EPISODIC_DECAY_MULT;
     if (type === 'procedural') return PROCEDURAL_DECAY_MULT;
+    if (type === 'utterance')  return UTTERANCE_DECAY_MULT;
     return SEMANTIC_DECAY_MULT;
 }
 
@@ -49,14 +53,23 @@ export class MemoryCortex {
         const boost    = this._boost();
         const existing = this._findSimilar(entities, content);
         if (existing) {
-            existing.salience   = Math.min(1, existing.salience + boost);
-            existing.accessed   = Date.now();
+            existing.salience    = Math.min(1, existing.salience + boost);
+            existing.accessed    = Date.now();
             existing.accessCount++;
+            // Merge any new entity tags the duplicate carry — preserves intent tags
+            // added by languageBoot that the first encoding may not have had.
+            for (const e of entities) {
+                if (typeof e === 'string' && !existing.entities.includes(e)) {
+                    existing.entities.push(e);
+                }
+            }
             if (content.length > existing.content.length) existing.content = content;
             return existing;
         }
 
-        const effectiveSalience = Math.min(1, salience + Math.max(0, dopamine) * 0.2);
+        // Cap the dopamine salience bonus at 0.3 so boot-time high-dopamine
+        // encodings can't pre-saturate nodes to 1.0 before any conversation starts.
+        const effectiveSalience = Math.min(0.8, salience + Math.max(0, dopamine) * 0.1);
 
         const node = {
             id:          this._nextId++,
@@ -107,7 +120,8 @@ export class MemoryCortex {
                 const typeBias =
                     context === 'conversation' && node.type === 'episodic'   ?  0.2  :
                     context === 'background'   && node.type === 'semantic'   ?  0.2  :
-                    context === 'introspect'   && node.type === 'procedural' ?  0.15 : 0;
+                    context === 'introspect'   && node.type === 'procedural' ?  0.15 :
+                    context === 'speech'       && node.type === 'utterance'  ?  0.4  : 0;
 
                 const score = decayed * 0.4 + entityScore * 0.35 + emotionScore + recency + typeBias;
                 return { node, score, decayed };
@@ -156,7 +170,8 @@ export class MemoryCortex {
                 const typeBias =
                     context === 'conversation' && node.type === 'episodic'   ?  0.2  :
                     context === 'background'   && node.type === 'semantic'   ?  0.2  :
-                    context === 'introspect'   && node.type === 'procedural' ?  0.15 : 0;
+                    context === 'introspect'   && node.type === 'procedural' ?  0.15 :
+                    context === 'speech'       && node.type === 'utterance'  ?  0.4  : 0;
 
                 const neuralHit = indexSet.has(node.id % 600000) ? 0.25 : 0;
 
@@ -196,7 +211,9 @@ export class MemoryCortex {
             .map(m => {
                 const tag = m.type === 'episodic'
                     ? `episodic turn:${m.turnId ?? '?'}`
-                    : m.type === 'procedural' ? 'procedural' : 'semantic';
+                    : m.type === 'procedural' ? 'procedural'
+                    : m.type === 'utterance'  ? 'utterance'
+                    : 'semantic';
                 return `[${tag}, ${m.emotion}, salience ${m.salience.toFixed(2)}] ${m.content}`;
             })
             .join('\n');
@@ -215,6 +232,10 @@ export class MemoryCortex {
 
     // ── Internal ──────────────────────────────────────────────────────────────
     _findSimilar(entities, content) {
+        // Exact content match first — catches fixed phrases re-encoded across epochs
+        const exact = this.nodes.find(n => n.content === content);
+        if (exact) return exact;
+
         const query        = entities.filter(e => typeof e === 'string').map(e => e.toLowerCase());
         const contentWords = new Set(content.toLowerCase().split(/\s+/).filter(w => w.length > 4));
         for (const node of this.nodes) {

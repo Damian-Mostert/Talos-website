@@ -12,6 +12,15 @@ const MODEL         = 'llama-3.1-8b-instant';
 const API_KEY       = process.env.GROQ_API_KEY; // server-only — do NOT prefix with NEXT_PUBLIC_
 const TIMEOUT       = 20000;
 
+// Hard ceiling on any single request's max_tokens, regardless of what the
+// caller asks for. Raised from 800 → 1600: research.js now batches up to
+// 5 topics per call and asks for numPredict=1100 to give each topic enough
+// room that a normal answer doesn't push later topics off the end of the
+// response. 800 was clipping that down below what a full 5-topic batch
+// actually needs, which showed up as topics silently missing from replies
+// (looked like "unanswerable" but was really just truncation).
+const MAX_TOKENS_CEILING = 1600;
+
 export async function POST(req: NextRequest) {
   if (!API_KEY) {
     console.error('[api/llm] GROQ_API_KEY is not set');
@@ -34,7 +43,7 @@ export async function POST(req: NextRequest) {
     model:       MODEL,
     messages,
     stream:      false,
-    max_tokens:  Math.min(Number(numPredict) || 400, 180),
+    max_tokens:  Math.min(Number(numPredict) || 400, MAX_TOKENS_CEILING),
     temperature: 0.2,
   };
   if (jsonMode) groqBody.response_format = { type: 'json_object' };

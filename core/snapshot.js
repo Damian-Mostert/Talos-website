@@ -120,7 +120,7 @@ export async function saveState(consciousness) {
         brain, cortex, wm, meta, myName, humanName, selfModel,
         devStage, devStageProgress, _turnsInConversation,
         conversationHistory, thoughts, recentTopics, curiosity,
-        goalStack, goalHistory, mood, neuralState, thinkingAudit,
+        goalStack, goalHistory, mood, neuralState, thinkingAudit, beliefs,
     } = consciousness;
 
     const state = {
@@ -141,6 +141,7 @@ export async function saveState(consciousness) {
         wmSlots: wm.slots,
         metaLog: meta.log,
         metaWeights: meta.weights,
+        beliefs: beliefs ? { items: beliefs.items, nextId: beliefs._nextId } : null,
     };
 
     try {
@@ -187,6 +188,10 @@ export async function loadState(consciousness) {
         if (s.wmSlots) wm.slots = s.wmSlots;
         if (s.metaLog) meta.log = s.metaLog;
         if (s.metaWeights) meta.weights = s.metaWeights;
+        if (s.beliefs && consciousness.beliefs) {
+            consciousness.beliefs.items = Array.isArray(s.beliefs.items) ? s.beliefs.items : [];
+            consciousness.beliefs._nextId = s.beliefs.nextId ?? consciousness.beliefs.items.length;
+        }
         return true;
     } catch {
         return false;
