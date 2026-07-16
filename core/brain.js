@@ -10,16 +10,30 @@ const SCALE = BRAIN_SIZE_GB / 1.82;
 function s(n) { return Math.round(n * SCALE / 1000) * 1000; } // scale + round to nearest 1k
 
 const REGIONS = {
-    thalamus:     { size: s( 80_000), inhibRatio: 0.10, threshold: 0.15 },
-    amygdala:     { size: s( 40_000), inhibRatio: 0.05, threshold: 0.12 },
-    sensory:      { size: s(400_000), inhibRatio: 0.20, threshold: 0.25 },
-    visual:       { size: s(100_000), inhibRatio: 0.15, threshold: 0.20 },
-    association:  { size: s(600_000), inhibRatio: 0.20, threshold: 0.30 },
-    hippocampus:  { size: s(160_000), inhibRatio: 0.15, threshold: 0.20 },
-    temporal:     { size: s(200_000), inhibRatio: 0.10, threshold: 0.25 },
-    prefrontal:   { size: s(300_000), inhibRatio: 0.10, threshold: 0.20 },
-    motor:        { size: s(240_000), inhibRatio: 0.20, threshold: 0.35 },
-    cerebellum:   { size: s(300_000), inhibRatio: 0.30, threshold: 0.30 },
+    // ── Input & relay ──────────────────────────────────────────────────────
+    thalamus:       { size: s( 80_000), inhibRatio: 0.10, threshold: 0.15 },
+    // ── Limbic & drives ───────────────────────────────────────────────────
+    hypothalamus:   { size: s( 50_000), inhibRatio: 0.05, threshold: 0.10 }, // hunger/thirst/drives
+    amygdala:       { size: s( 40_000), inhibRatio: 0.05, threshold: 0.12 }, // salience/threat
+    // ── Sensory cortices ──────────────────────────────────────────────────
+    sensory:        { size: s(400_000), inhibRatio: 0.20, threshold: 0.25 },
+    visual:         { size: s(100_000), inhibRatio: 0.15, threshold: 0.20 },
+    // ── Memory ────────────────────────────────────────────────────────────
+    hippocampus:    { size: s(160_000), inhibRatio: 0.15, threshold: 0.20 },
+    temporal:       { size: s(200_000), inhibRatio: 0.10, threshold: 0.25 },
+    // ── Association & executive ───────────────────────────────────────────
+    association:    { size: s(600_000), inhibRatio: 0.20, threshold: 0.30 },
+    prefrontal:     { size: s(300_000), inhibRatio: 0.10, threshold: 0.20 },
+    acc:            { size: s(120_000), inhibRatio: 0.18, threshold: 0.26 }, // conflict/error/effort
+    // ── Action selection ──────────────────────────────────────────────────
+    basalGanglia:   { size: s(180_000), inhibRatio: 0.35, threshold: 0.32 }, // winner-take-all gating
+    // ── Action ────────────────────────────────────────────────────────────
+    motor:          { size: s(240_000), inhibRatio: 0.20, threshold: 0.35 },
+    cerebellum:     { size: s(300_000), inhibRatio: 0.30, threshold: 0.30 },
+    // ── Global neuromodulators ────────────────────────────────────────────
+    vta:            { size: s( 20_000), inhibRatio: 0.05, threshold: 0.08 }, // dopamine source
+    locusCoeruleus: { size: s( 15_000), inhibRatio: 0.05, threshold: 0.08 }, // norepinephrine source
+    raphe:          { size: s( 15_000), inhibRatio: 0.05, threshold: 0.08 }, // serotonin → patience
 };
 
 export class Brain {
@@ -99,43 +113,77 @@ export class Brain {
 
     _wire() {
         console.log('Wiring regions...');
-        // ── Thalamus: relay gate ────────────────────────────────────────────────────
-        // All sensory/visual input arrives here first. PFC gates it top-down.
-        this._wireRegions('visual',      'thalamus',     0.8, [0.5, 1.0]);
-        this._wireRegions('sensory',     'thalamus',     0.8, [0.5, 1.0]);
-        this._wireRegions('thalamus',    'visual',       0.3, [0.2, 0.5]);  // thalamocortical feedback
-        this._wireRegions('thalamus',    'sensory',      0.3, [0.2, 0.5]);
-        this._wireRegions('thalamus',    'association',  0.6, [0.4, 0.9]);  // relay → cortex
-        this._wireRegions('thalamus',    'hippocampus',  0.4, [0.3, 0.7]);
-        this._wireRegions('prefrontal',  'thalamus',     0.3, [0.2, 0.6]);  // PFC gates the relay
-        // ── Amygdala: threat and salience detector ────────────────────────────────
-        // Fast "low road": thalamus → amygdala (before cortex processes it)
-        // Slow "high road": sensory cortex → amygdala (detailed evaluation)
-        this._wireRegions('thalamus',    'amygdala',     0.6, [0.5, 1.0]);
-        this._wireRegions('sensory',     'amygdala',     0.4, [0.3, 0.8]);
-        this._wireRegions('visual',      'amygdala',     0.3, [0.3, 0.7]);
-        this._wireRegions('amygdala',    'thalamus',     0.4, [0.4, 0.8]);  // amplify threat in relay
-        this._wireRegions('amygdala',    'prefrontal',   0.4, [0.3, 0.7]);  // alert PFC
-        this._wireRegions('amygdala',    'hippocampus',  0.5, [0.4, 0.9]);  // emotional memory encoding
-        this._wireRegions('amygdala',    'motor',        0.3, [0.3, 0.7]);  // fight/flight motor bias
-        this._wireRegions('prefrontal',  'amygdala',     0.3, [0.2, 0.5]);  // PFC suppresses amygdala
-        this._wireRegions('hippocampus', 'amygdala',     0.3, [0.2, 0.5]);  // memory context modulates threat
-        // ── Cortical feedforward ─────────────────────────────────────────────────────────────
-        this._wireRegions('visual',      'association',  0.5, [0.3, 0.7]);
-        this._wireRegions('sensory',     'association',  0.5, [0.3, 0.7]);
-        this._wireRegions('association', 'hippocampus',  0.7, [0.4, 0.9]);
-        this._wireRegions('hippocampus', 'association',  0.7, [0.4, 0.9]);
-        this._wireRegions('hippocampus', 'temporal',     0.8, [0.5, 1.0]);
-        this._wireRegions('temporal',    'hippocampus',  0.6, [0.3, 0.8]);
-        this._wireRegions('temporal',    'association',  0.6, [0.3, 0.8]);
-        this._wireRegions('association', 'prefrontal',   0.5, [0.3, 0.8]);
-        this._wireRegions('prefrontal',  'association',  0.4, [0.2, 0.6]);
-        this._wireRegions('prefrontal',  'motor',        0.4, [0.3, 0.8]);
-        this._wireRegions('association', 'motor',        0.4, [0.3, 0.7]);
-        this._wireRegions('motor',       'cerebellum',   0.5, [0.3, 0.7]);
-        this._wireRegions('cerebellum',  'motor',        0.5, [0.3, 0.7]);
-        this._wireRegions('cerebellum',  'sensory',      0.3, [0.2, 0.5]);
-        this._wireRegions('sensory',     'motor',        0.3, [0.2, 0.6]);
+        // ── Thalamus ──────────────────────────────────────────────────────────────
+        this._wireRegions('visual',         'thalamus',       0.8, [0.5, 1.0]);
+        this._wireRegions('sensory',        'thalamus',       0.8, [0.5, 1.0]);
+        this._wireRegions('thalamus',       'visual',         0.3, [0.2, 0.5]);
+        this._wireRegions('thalamus',       'sensory',        0.3, [0.2, 0.5]);
+        this._wireRegions('thalamus',       'association',    0.6, [0.4, 0.9]);
+        this._wireRegions('thalamus',       'hippocampus',    0.4, [0.3, 0.7]);
+        this._wireRegions('prefrontal',     'thalamus',       0.3, [0.2, 0.6]);
+        // ── Hypothalamus: drives → thalamus, amygdala, VTA ───────────────────────
+        this._wireRegions('hypothalamus',   'thalamus',       0.5, [0.4, 0.9]);
+        this._wireRegions('hypothalamus',   'amygdala',       0.4, [0.3, 0.8]);
+        this._wireRegions('hypothalamus',   'prefrontal',     0.3, [0.2, 0.6]);
+        this._wireRegions('hypothalamus',   'vta',            0.4, [0.3, 0.8]);
+        this._wireRegions('prefrontal',     'hypothalamus',   0.2, [0.1, 0.4]);
+        // ── Amygdala ──────────────────────────────────────────────────────────────
+        this._wireRegions('thalamus',       'amygdala',       0.6, [0.5, 1.0]);
+        this._wireRegions('sensory',        'amygdala',       0.4, [0.3, 0.8]);
+        this._wireRegions('visual',         'amygdala',       0.3, [0.3, 0.7]);
+        this._wireRegions('amygdala',       'thalamus',       0.4, [0.4, 0.8]);
+        this._wireRegions('amygdala',       'prefrontal',     0.4, [0.3, 0.7]);
+        this._wireRegions('amygdala',       'acc',            0.4, [0.3, 0.7]);
+        this._wireRegions('amygdala',       'hippocampus',    0.5, [0.4, 0.9]);
+        this._wireRegions('amygdala',       'motor',          0.3, [0.3, 0.7]);
+        this._wireRegions('amygdala',       'locusCoeruleus', 0.4, [0.3, 0.8]);
+        this._wireRegions('prefrontal',     'amygdala',       0.3, [0.2, 0.5]);
+        this._wireRegions('hippocampus',    'amygdala',       0.3, [0.2, 0.5]);
+        // ── Cortical feedforward ──────────────────────────────────────────────────
+        this._wireRegions('visual',         'association',    0.5, [0.3, 0.7]);
+        this._wireRegions('sensory',        'association',    0.5, [0.3, 0.7]);
+        this._wireRegions('association',    'hippocampus',    0.7, [0.4, 0.9]);
+        this._wireRegions('hippocampus',    'association',    0.7, [0.4, 0.9]);
+        this._wireRegions('hippocampus',    'temporal',       0.8, [0.5, 1.0]);
+        this._wireRegions('temporal',       'hippocampus',    0.6, [0.3, 0.8]);
+        this._wireRegions('temporal',       'association',    0.6, [0.3, 0.8]);
+        this._wireRegions('association',    'prefrontal',     0.5, [0.3, 0.8]);
+        this._wireRegions('prefrontal',     'association',    0.4, [0.2, 0.6]);
+        this._wireRegions('prefrontal',     'motor',          0.4, [0.3, 0.8]);
+        this._wireRegions('association',    'motor',          0.4, [0.3, 0.7]);
+        this._wireRegions('motor',          'cerebellum',     0.5, [0.3, 0.7]);
+        this._wireRegions('cerebellum',     'motor',          0.5, [0.3, 0.7]);
+        this._wireRegions('cerebellum',     'sensory',        0.3, [0.2, 0.5]);
+        this._wireRegions('sensory',        'motor',          0.3, [0.2, 0.6]);
+        // ── ACC: conflict monitor ─────────────────────────────────────────────────
+        this._wireRegions('association',    'acc',            0.4, [0.3, 0.7]);
+        this._wireRegions('prefrontal',     'acc',            0.3, [0.2, 0.6]);
+        this._wireRegions('acc',            'prefrontal',     0.5, [0.4, 0.8]);
+        this._wireRegions('acc',            'basalGanglia',   0.4, [0.3, 0.7]);
+        this._wireRegions('acc',            'association',    0.3, [0.2, 0.5]);
+        this._wireRegions('acc',            'locusCoeruleus', 0.3, [0.2, 0.6]);
+        // ── Basal ganglia: winner-take-all gating ─────────────────────────────────
+        this._wireRegions('prefrontal',     'basalGanglia',   0.5, [0.4, 0.9]);
+        this._wireRegions('association',    'basalGanglia',   0.4, [0.3, 0.7]);
+        this._wireRegions('hippocampus',    'basalGanglia',   0.3, [0.2, 0.6]);
+        this._wireRegions('basalGanglia',   'motor',          0.5, [0.4, 0.9]);
+        this._wireRegions('basalGanglia',   'prefrontal',     0.3, [0.2, 0.5]);
+        this._wireRegions('basalGanglia',   'thalamus',       0.4, [0.3, 0.7]);
+        this._wireRegions('vta',            'basalGanglia',   0.5, [0.4, 0.9]);
+        // ── Neuromodulator nuclei ─────────────────────────────────────────────────
+        this._wireRegions('hippocampus',    'vta',            0.3, [0.2, 0.6]);
+        this._wireRegions('prefrontal',     'vta',            0.2, [0.1, 0.4]);
+        this._wireRegions('vta',            'prefrontal',     0.4, [0.3, 0.7]);
+        this._wireRegions('vta',            'hippocampus',    0.4, [0.3, 0.7]);
+        this._wireRegions('vta',            'association',    0.3, [0.2, 0.5]);
+        this._wireRegions('locusCoeruleus', 'thalamus',       0.4, [0.3, 0.7]);
+        this._wireRegions('locusCoeruleus', 'prefrontal',     0.3, [0.2, 0.6]);
+        this._wireRegions('locusCoeruleus', 'association',    0.3, [0.2, 0.5]);
+        this._wireRegions('prefrontal',     'raphe',          0.2, [0.1, 0.4]);
+        this._wireRegions('raphe',          'amygdala',       0.3, [0.2, 0.5]);
+        this._wireRegions('raphe',          'prefrontal',     0.3, [0.2, 0.5]);
+        this._wireRegions('raphe',          'association',    0.2, [0.1, 0.4]);
+        this._wireRegions('raphe',          'basalGanglia',   0.2, [0.1, 0.4]);
         console.log('Wiring done.');
     }
 
@@ -268,8 +316,12 @@ export class Brain {
         if (state.needs) {
             this.setNeeds(state.needs);
             const needSignal = 2.4 + (1 - (this.needs.hunger + this.needs.energy + this.needs.joy) / 3) * 1.8;
-            // Interoceptive needs route through thalamus → association
+            // Needs route through hypothalamus first, then thalamus → cortex
             const thalamus = this.layout.thalamus;
+            const hypo     = this.layout.hypothalamus;
+            this.engine.pulse(hypo.start,      needSignal * (1.0 + (this.needs.hunger < 0.4 ? 1.2 : 0)));
+            this.engine.pulse(hypo.start + 8,  needSignal * (1.0 + (this.needs.energy < 0.3 ? 0.9 : 0)));
+            this.engine.pulse(hypo.start + 16, needSignal * (1.0 + (this.needs.joy    < 0.3 ? 0.7 : 0)));
             this.engine.pulse(thalamus.start + 24, needSignal * (1.0 + (this.needs.hunger < 0.4 ? 0.8 : 0)));
             this.engine.pulse(thalamus.start + 32, needSignal * (1.0 + (this.needs.energy < 0.3 ? 0.6 : 0)));
             this.engine.pulse(thalamus.start + 40, needSignal * (1.0 + (this.needs.joy < 0.3 ? 0.5 : 0)));
@@ -462,33 +514,37 @@ export class Brain {
     }
 
     // ── Emotional state — reads actual region activations ─────────────────────
-    // This is the ground truth mood. Consciousness reads this, not the other way around.
-    //
-    // valence  = dopamine level (positive/negative affect)
-    // arousal  = mean absolute activation across sensory + association (how activated)
-    // drive    = hippocampus activity (memory engagement = motivation to act)
     emotionalState() {
         this._tickNeeds();
 
-        const sensoryMean = this.engine.meanAbs(this.layout.sensory.start,    this.layout.sensory.end,    8);
-        const assocMean   = this.engine.meanAbs(this.layout.association.start, this.layout.association.end, 8);
-        const hippMean    = this.engine.meanAbs(this.layout.hippocampus.start, this.layout.hippocampus.end, 4);
+        const sensoryMean = this.engine.meanAbs(this.layout.sensory.start,      this.layout.sensory.end,      8);
+        const assocMean   = this.engine.meanAbs(this.layout.association.start,   this.layout.association.end,  8);
+        const hippMean    = this.engine.meanAbs(this.layout.hippocampus.start,   this.layout.hippocampus.end,  4);
+        const hypothMean  = this.engine.meanAbs(this.layout.hypothalamus.start,  this.layout.hypothalamus.end, 2);
+        const accMean     = this.engine.meanAbs(this.layout.acc.start,           this.layout.acc.end,          2);
+        const rapheMean   = this.engine.meanAbs(this.layout.raphe.start,         this.layout.raphe.end,        2);
+
         const needAverage = (this.needs.hunger + this.needs.energy + this.needs.joy) / 3;
         const pressure = 1 - needAverage;
 
-        // Arousal: how much is firing overall, plus a tonic floor for baseline wakefulness
-        const rawArousal = Math.tanh((sensoryMean + assocMean) * 10 + pressure * 0.35) + 0.1;
+        // Hypothalamus drives urgency — unmet needs amplify pressure signal
+        const hypothPressure = Math.tanh(hypothMean * 20 + pressure * 0.5);
 
-        // Drive: hippocampus engagement — memory being activated = something matters,
-        // but low needs also increase urgency to act.
-        const rawDrive = Math.tanh(hippMean * 15 + pressure * 0.6);
+        // Arousal: sensory + association activity, floored by wakefulness
+        const rawArousal = Math.tanh((sensoryMean + assocMean) * 10 + hypothPressure * 0.35) + 0.1;
 
-        // Valence: dopamine is the direct signal, but unmet needs pull it down.
-        const rawValence = Math.tanh(this.engine.dopamine + 0.2 - pressure * 0.7);
+        // Drive: hippocampus engagement + hypothalamic pressure
+        const rawDrive = Math.tanh(hippMean * 15 + hypothPressure * 0.6);
 
-        // Smooth with previous state (emotional inertia — moods don't flip instantly)
-        // Arousal uses faster smoothing so real activation registers promptly
-        this._valence = this._valence * 0.7 + rawValence * 0.3;
+        // Valence: dopamine minus need pressure, modulated by serotonin (raphe)
+        // Raphe (serotonin) stabilises valence — high raphe = less volatile mood
+        const serotoninStability = Math.tanh(rapheMean * 30);
+        const rawValence = Math.tanh(this.engine.dopamine + 0.2 - pressure * 0.7 * (1 - serotoninStability * 0.3));
+
+        // ACC conflict signal — high ACC = uncertainty/effort, slightly negative valence
+        const conflictPenalty = Math.tanh(accMean * 25) * 0.15;
+
+        this._valence = this._valence * 0.7 + (rawValence - conflictPenalty) * 0.3;
         this._arousal = this._arousal * 0.6 + rawArousal * 0.4;
         this._drive   = this._drive   * 0.8 + rawDrive   * 0.2;
 
@@ -500,6 +556,107 @@ export class Brain {
             needs:          this.getNeeds(),
             body:           this.getBody(),
         };
+    }
+
+    behaviorState() {
+        const emotional = this.emotionalState();
+        const { hypothalamus, acc, basalGanglia, vta, raphe, prefrontal, association } = this.layout;
+        const hypoMean = this.engine.meanAbs(hypothalamus.start, hypothalamus.end, 2);
+        const accMean = this.engine.meanAbs(acc.start, acc.end, 2);
+        const bgMean = this.engine.meanAbs(basalGanglia.start, basalGanglia.end, 4);
+        const vtaMean = this.engine.meanAbs(vta.start, vta.end, 2);
+        const rapheMean = this.engine.meanAbs(raphe.start, raphe.end, 2);
+        const pfcMean = this.engine.meanAbs(prefrontal.start, prefrontal.end, 8);
+        const assocMean = this.engine.meanAbs(association.start, association.end, 8);
+        const needAverage = (this.needs.hunger + this.needs.energy + this.needs.joy) / 3;
+        const pressure = 1 - needAverage;
+        const curiosity = Math.max(0, Math.min(1, Math.tanh(hypoMean * 24 + pressure * 0.4 + assocMean * 2 + (1 - Math.abs(emotional.valence)) * 0.2)));
+        const uncertainty = Math.max(0, Math.min(1, Math.tanh(accMean * 22 + emotional.arousal * 0.5 + (1 - Math.abs(emotional.valence)) * 0.25)));
+        const actionReadiness = Math.max(0, Math.min(1, Math.tanh(bgMean * 24 + vtaMean * 16 + emotional.drive * 0.8 + pfcMean * 1.4)));
+        const patience = Math.max(0, Math.min(1, 0.45 + Math.tanh(rapheMean * 24) * 0.45 + (1 - emotional.arousal) * 0.1));
+        const speechReadiness = Math.max(0, Math.min(1, 0.1 + emotional.drive * 0.2 + emotional.valence * 0.12 + actionReadiness * 0.16 - uncertainty * 0.18 - emotional.arousal * 0.15 + pfcMean * 0.04));
+        const researchDrive = Math.max(0, Math.min(1, curiosity * 0.45 + uncertainty * 0.35 + pressure * 0.2 + emotional.drive * 0.2));
+
+        return {
+            valence: emotional.valence,
+            arousal: emotional.arousal,
+            drive: emotional.drive,
+            curiosity,
+            uncertainty,
+            actionReadiness,
+            patience,
+            speechReadiness,
+            researchDrive,
+        };
+    }
+
+    decideBehavior(options = {}) {
+        const state = this.behaviorState();
+        const activeGoal = options.activeGoal || null;
+        const hasUrgentGoal = !!activeGoal && (activeGoal.urgency || 0) > 0.55;
+        const shouldResearch = Boolean(
+            activeGoal && (
+                hasUrgentGoal ||
+                state.uncertainty > 0.28 ||
+                state.researchDrive > 0.34 ||
+                options.humanPresent === true
+            )
+        );
+        const gap = Math.max(0, (options.tickCount || 0) - (options.lastSpokeTick || 0));
+        const canSpeak = Boolean(
+            options.pendingSelfSpeech &&
+            options.humanPresent === true &&
+            gap >= 60 &&
+            state.speechReadiness > 0.22 &&
+            state.drive > 0.1 &&
+            state.arousal < 0.85 &&
+            (hasUrgentGoal || state.valence > -0.05)
+        );
+        return {
+            ...state,
+            activeGoal,
+            canSpeak,
+            shouldResearch,
+            shouldAct: Boolean(activeGoal && state.actionReadiness > 0.3),
+            responseMode: shouldResearch ? 'grounded' : canSpeak ? 'speak' : 'quiet',
+        };
+    }
+
+    // ── Basal ganglia: winner-take-all action selection ───────────────────────
+    // Reads competing action signals from PFC/association, suppresses losers.
+    // This is what prevents everything activating simultaneously.
+    actionSelection() {
+        const bg  = this.layout.basalGanglia;
+        const pfc = this.layout.prefrontal;
+        const acc = this.layout.acc;
+
+        // Read current BG activation — reflects competing action proposals
+        const bgMean = this.engine.meanAbs(bg.start, bg.end, 4);
+        if (bgMean < 0.001) return;
+
+        // BG inhibits motor cortex proportional to its own activation
+        // (indirect pathway — suppresses all but the winning action)
+        const inhibStrength = Math.tanh(bgMean * 40) * 0.25;
+        const pot = this.engine.potential;
+        const motor = this.layout.motor;
+        const step = Math.max(4, Math.floor(motor.size / 500));
+        for (let i = motor.start; i < motor.end; i += step) {
+            pot[i] *= (1 - inhibStrength);
+        }
+
+        // ACC monitors conflict — high BG variance = competing actions = conflict
+        const bgPeak = this.engine.peakAbs(bg.start, bg.end);
+        const conflict = Math.max(0, bgPeak - bgMean * 2);
+        if (conflict > 0.01) {
+            this.engine.pulse(acc.start,     conflict * 1.5);
+            this.engine.pulse(acc.start + 8, conflict * 1.2);
+        }
+
+        // VTA fires when BG selects a high-value action (dopamine prediction)
+        const vta = this.layout.vta;
+        if (bgPeak > 0.05) {
+            this.engine.pulse(vta.start, bgPeak * 1.2);
+        }
     }
 
     novelty() {
@@ -542,6 +699,29 @@ export class Brain {
                 if (input[i] > 0) this.engine.inject(start + i, input[i]);
             }
         }
+    }
+
+    // External speech arrives via thalamus → amygdala (alerting) → sensory.
+    // This is the anatomically correct path for auditory input — distinct from
+    // perceive() (internal thought) which bypasses thalamus entirely.
+    // The thalamic pulse is stronger than perceive()'s inject so the brain
+    // can feel the difference between "I thought this" and "something arrived."
+    hear(input) {
+        const thalamus = this.layout.thalamus;
+        const sensory  = this.layout.sensory;
+        const amygdala = this.layout.amygdala;
+        if (!(input instanceof Uint32Array)) return;
+        // Route through thalamus first — the relay gate
+        for (let i = 0; i < input.length; i++) {
+            this.engine.pulse(thalamus.start + (input[i] % thalamus.size), 2.2);
+        }
+        // Thalamus → sensory cortex (stronger than internal perceive)
+        for (let i = 0; i < input.length; i++) {
+            this.engine.pulse(sensory.start + (input[i] % sensory.size), 1.8);
+        }
+        // Mild amygdala alerting — novelty/attention, not threat
+        this.engine.pulse(amygdala.start,     0.6);
+        this.engine.pulse(amygdala.start + 8, 0.4);
     }
 
     // Encode a concept directly into hippocampus — this is how learning sticks
@@ -633,13 +813,24 @@ export class Brain {
     // Raw region measurements — opaque values the LLM must report, not interpret.
     // Named Ω1–Ω5 so the LLM has no prior associations to project onto them.
     readInternalState() {
-        const { association, prefrontal, hippocampus, sensory, motor } = this.layout;
+        const { association, prefrontal, hippocampus, sensory, motor, acc, basalGanglia, hypothalamus } = this.layout;
+        const pfcStep   = Math.max(1, Math.floor((prefrontal.end   - prefrontal.start)   / 500));
+        const assocStep = Math.max(1, Math.floor((association.end  - association.start)  / 500));
+        const hippStep  = Math.max(1, Math.floor((hippocampus.end  - hippocampus.start)  / 500));
+        const sensStep  = Math.max(1, Math.floor((sensory.end      - sensory.start)      / 500));
+        const motorStep = Math.max(1, Math.floor((motor.end        - motor.start)        / 500));
+        const accStep   = Math.max(1, Math.floor((acc.end          - acc.start)          / 500));
+        const bgStep    = Math.max(1, Math.floor((basalGanglia.end - basalGanglia.start) / 500));
+        const hypoStep  = Math.max(1, Math.floor((hypothalamus.end - hypothalamus.start) / 500));
         return {
-            Ω1: +this.engine.meanAbs(association.start, association.end, 8).toFixed(4),
-            Ω2: +this.engine.meanAbs(prefrontal.start,  prefrontal.end,  4).toFixed(4),
-            Ω3: +this.engine.meanAbs(hippocampus.start, hippocampus.end, 4).toFixed(4),
-            Ω4: +this.engine.meanAbs(sensory.start,     sensory.end,     8).toFixed(4),
-            Ω5: +this.engine.meanAbs(motor.start,       motor.end,       4).toFixed(4),
+            Ω1: +this.engine.meanAbs(association.start,  association.end,  assocStep).toFixed(4),
+            Ω2: +this.engine.meanAbs(prefrontal.start,   prefrontal.end,   pfcStep).toFixed(4),
+            Ω3: +this.engine.meanAbs(hippocampus.start,  hippocampus.end,  hippStep).toFixed(4),
+            Ω4: +this.engine.meanAbs(sensory.start,      sensory.end,      sensStep).toFixed(4),
+            Ω5: +this.engine.meanAbs(motor.start,        motor.end,        motorStep).toFixed(4),
+            Ω_acc:  +this.engine.meanAbs(acc.start,          acc.end,          accStep).toFixed(4),
+            Ω_bg:   +this.engine.meanAbs(basalGanglia.start, basalGanglia.end, bgStep).toFixed(4),
+            Ω_hypo: +this.engine.meanAbs(hypothalamus.start, hypothalamus.end, hypoStep).toFixed(4),
             Ω_da: +this.engine.dopamine.toFixed(3),
             Ω_ne: +this.engine.norepinephrine.toFixed(3),
         };
@@ -681,23 +872,33 @@ export class Brain {
         const motor  = this.layout.motor;
         const visual = this.layout.visual;
 
-        // Tonic PFC drive: needs pressure + association peak.
-        // PFC has baseline self-sustaining activity in a real brain — it doesn't
-        // wait for association to overflow. Needs pressure is the floor.
         const needAverage = (this.needs.hunger + this.needs.energy + this.needs.joy) / 3;
-        const needsPressure = 1 - needAverage;  // 0 = fully satisfied, 1 = desperate
+        const needsPressure = 1 - needAverage;
         const assocPeak = this.engine.peakAbs(assoc.start, assoc.end);
-        // Tonic floor must exceed PFC threshold (0.20) so PFC is always minimally active.
-        // 0.30 baseline + needs pressure + association activity.
-        const tonicSignal = 0.30 + needsPressure * 0.25 + assocPeak * 1.5;
 
-        // Drive PFC with tonic signal — 8 seed neurons pulse and propagate into motor
-        for (let i = 0; i < 8; i++) {
-            this.engine.pulse(pfc.start + i * Math.floor(pfc.size / 8), tonicSignal);
+        // Scale tonic signal to brain size — small brains have fewer neurons
+        // so the same 8-neuron pulse gets diluted much more by meanAbs.
+        // Compensate by raising the signal so PFC stays above its threshold (0.20)
+        // regardless of how many neurons are in the region.
+        const pfcSize = pfc.end - pfc.start;
+        const sizeCompensation = Math.max(1.0, Math.sqrt(300_000 / Math.max(1, pfcSize)));
+        const tonicSignal = (0.30 + needsPressure * 0.25 + assocPeak * 1.5) * sizeCompensation;
+
+        // Pulse more seed neurons proportional to region size so the signal
+        // isn't diluted to nothing when the region is small.
+        const seedCount = Math.max(8, Math.min(64, Math.floor(pfcSize / 500)));
+        const seedStep  = Math.max(1, Math.floor(pfcSize / seedCount));
+        for (let i = 0; i < seedCount; i++) {
+            this.engine.pulse(pfc.start + i * seedStep, tonicSignal);
         }
 
-        const pfcStep = Math.max(4, Math.floor(pfc.size / 2000));
-        const pfcLevel = Math.tanh(this.engine.meanAbs(pfc.start, pfc.end, pfcStep) * 8);
+        const pfcStep  = Math.max(1, Math.floor(pfcSize / 2000));
+        // meanAbs is inversely proportional to region size — a small brain
+        // produces a proportionally smaller mean even with the same total
+        // energy injected. Scale the tanh gain to compensate so pfcLevel
+        // lands in a useful range regardless of BRAIN_SIZE_GB.
+        const pfcGain  = 8 * sizeCompensation;
+        const pfcLevel = Math.tanh(this.engine.meanAbs(pfc.start, pfc.end, pfcStep) * pfcGain);
 
         // Top-down inhibition of sensory/association (attention gating)
         if (pfcLevel > 0.05) {
@@ -721,18 +922,16 @@ export class Brain {
                     const xWeight = Math.min(1, Math.abs(normX));
                     const yWeight = Math.min(1, Math.abs(normY));
                     const strength = motorSignal * this.motorHint.intensity;
-
-                    if (xWeight > 0) {
-                        this.engine.inject(motor.start + xQuadrant, strength * xWeight);
-                    }
-                    if (yWeight > 0) {
-                        this.engine.inject(motor.start + yQuadrant, strength * yWeight);
-                    }
+                    if (xWeight > 0) this.engine.inject(motor.start + xQuadrant, strength * xWeight);
+                    if (yWeight > 0) this.engine.inject(motor.start + yQuadrant, strength * yWeight);
                     this.engine.inject(this.layout.association.start + 40, 0.4 + this.motorHint.intensity * 0.4);
                     this.engine.pulse(this.layout.prefrontal.start + 4, 0.5 + this.motorHint.intensity * 0.6);
                 }
             }
         }
+
+        // Basal ganglia action selection runs every tick alongside PFC
+        this.actionSelection();
 
         return pfcLevel;
     }

@@ -171,16 +171,22 @@ export default function TalosChatPage() {
     };
 
     const RDEF: Region[] = [
-      { name: 'prefrontal', rx: 0.5, ry: 0.09, rr: 0.115, col: [110, 231, 183] },
-      { name: 'thalamus', rx: 0.5, ry: 0.22, rr: 0.065, col: [255, 180, 120] },
-      { name: 'amygdala', rx: 0.28, ry: 0.3, rr: 0.05, col: [255, 100, 130] },
-      { name: 'visual', rx: 0.18, ry: 0.16, rr: 0.09, col: [255, 209, 102] },
-      { name: 'sensory', rx: 0.82, ry: 0.16, rr: 0.09, col: [143, 184, 224] },
-      { name: 'association', rx: 0.5, ry: 0.35, rr: 0.12, col: [126, 232, 193] },
-      { name: 'hippocampus', rx: 0.27, ry: 0.48, rr: 0.085, col: [201, 166, 255] },
-      { name: 'temporal', rx: 0.73, ry: 0.48, rr: 0.085, col: [242, 166, 201] },
-      { name: 'motor', rx: 0.5, ry: 0.62, rr: 0.105, col: [255, 138, 101] },
-      { name: 'cerebellum', rx: 0.5, ry: 0.8, rr: 0.095, col: [148, 163, 184] },
+      { name: 'prefrontal',     rx: 0.5,  ry: 0.09, rr: 0.115, col: [110, 231, 183] },
+      { name: 'thalamus',      rx: 0.5,  ry: 0.22, rr: 0.065, col: [255, 180, 120] },
+      { name: 'hypothalamus',  rx: 0.72, ry: 0.28, rr: 0.045, col: [255, 220,  80] },
+      { name: 'amygdala',      rx: 0.28, ry: 0.3,  rr: 0.05,  col: [255, 100, 130] },
+      { name: 'visual',        rx: 0.18, ry: 0.16, rr: 0.09,  col: [255, 209, 102] },
+      { name: 'sensory',       rx: 0.82, ry: 0.16, rr: 0.09,  col: [143, 184, 224] },
+      { name: 'association',   rx: 0.5,  ry: 0.35, rr: 0.12,  col: [126, 232, 193] },
+      { name: 'acc',           rx: 0.35, ry: 0.22, rr: 0.042, col: [180, 220, 255] },
+      { name: 'hippocampus',   rx: 0.27, ry: 0.48, rr: 0.085, col: [201, 166, 255] },
+      { name: 'temporal',      rx: 0.73, ry: 0.48, rr: 0.085, col: [242, 166, 201] },
+      { name: 'basalGanglia',  rx: 0.5,  ry: 0.52, rr: 0.07,  col: [255, 160,  60] },
+      { name: 'motor',         rx: 0.5,  ry: 0.66, rr: 0.105, col: [255, 138, 101] },
+      { name: 'cerebellum',    rx: 0.5,  ry: 0.82, rr: 0.095, col: [148, 163, 184] },
+      { name: 'vta',           rx: 0.62, ry: 0.58, rr: 0.032, col: [255, 230, 100] },
+      { name: 'locusCoeruleus',rx: 0.38, ry: 0.68, rr: 0.030, col: [100, 200, 255] },
+      { name: 'raphe',         rx: 0.62, ry: 0.68, rr: 0.030, col: [180, 255, 180] },
     ];
     const RBY_NAME: Record<string, number> = {};
     RDEF.forEach((r, i) => {
@@ -200,23 +206,38 @@ export default function TalosChatPage() {
     }
 
     const CONN_NAMES: [string, string][] = [
-      ['visual', 'thalamus'],
-      ['sensory', 'thalamus'],
-      ['thalamus', 'association'],
-      ['thalamus', 'amygdala'],
-      ['amygdala', 'prefrontal'],
-      ['amygdala', 'hippocampus'],
-      ['sensory', 'association'],
-      ['visual', 'association'],
-      ['association', 'hippocampus'],
-      ['association', 'prefrontal'],
-      ['hippocampus', 'association'],
-      ['hippocampus', 'temporal'],
-      ['temporal', 'prefrontal'],
-      ['prefrontal', 'motor'],
-      ['prefrontal', 'thalamus'],
-      ['motor', 'cerebellum'],
-      ['cerebellum', 'motor'],
+      ['visual',        'thalamus'],
+      ['sensory',       'thalamus'],
+      ['thalamus',      'association'],
+      ['thalamus',      'amygdala'],
+      ['amygdala',      'prefrontal'],
+      ['amygdala',      'hippocampus'],
+      ['sensory',       'association'],
+      ['visual',        'association'],
+      ['association',   'hippocampus'],
+      ['association',   'prefrontal'],
+      ['hippocampus',   'association'],
+      ['hippocampus',   'temporal'],
+      ['temporal',      'prefrontal'],
+      ['prefrontal',    'motor'],
+      ['prefrontal',    'thalamus'],
+      ['motor',         'cerebellum'],
+      ['cerebellum',    'motor'],
+      ['hypothalamus',  'thalamus'],
+      ['hypothalamus',  'amygdala'],
+      ['hypothalamus',  'vta'],
+      ['acc',           'prefrontal'],
+      ['acc',           'basalGanglia'],
+      ['association',   'acc'],
+      ['prefrontal',    'basalGanglia'],
+      ['basalGanglia',  'motor'],
+      ['basalGanglia',  'thalamus'],
+      ['vta',           'basalGanglia'],
+      ['vta',           'prefrontal'],
+      ['locusCoeruleus','thalamus'],
+      ['locusCoeruleus','prefrontal'],
+      ['raphe',         'amygdala'],
+      ['raphe',         'prefrontal'],
     ];
     const CONNECTIONS: [number, number][] = CONN_NAMES.map(([a, b]) => [RBY_NAME[a], RBY_NAME[b]]);
 
@@ -834,7 +855,6 @@ export default function TalosChatPage() {
       d.innerHTML = `<span class="ttag">[${tag}]</span>${body}`;
       monologue.appendChild(d);
       if (monologue.children.length > 150) monologue.firstChild!.remove();
-      panel.scrollTop = panel.scrollHeight;
     }
 
     let _thinking = false;

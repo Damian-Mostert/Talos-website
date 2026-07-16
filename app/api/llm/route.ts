@@ -77,6 +77,7 @@ export async function POST(req: NextRequest) {
     }
 
     const data = await res.json();
+    console.log(data)
     // Pass through the OpenAI-compatible shape unchanged so llm.js's parsing
     // (data.choices[0].message.content) keeps working without modification.
     return NextResponse.json(data);

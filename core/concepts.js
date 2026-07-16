@@ -15,9 +15,13 @@
 // Words are labels attached to concepts — not the other way around.
 // experience → meaning → word  (not: word → meaning)
 
-const DECAY_RATE   = 0.0003;   // concept activation decays between ticks
-const LEARN_RATE   = 0.12;     // how fast features update from new experience
-const MIN_SALIENCE = 0.04;     // prune below this
+const DECAY_RATE      = 0.012;  // activation decays per tick — raised to prevent attractor lock-in
+const HOP_DECAY       = 0.55;   // activation multiplier per association hop — limits spreading radius
+const LEARN_RATE      = 0.08;   // slower feature updates — reduces over-correlation
+const EMOTIONAL_BLEND = 0.04;   // max emotional blending per associate() call — was unbounded
+const MIN_SALIENCE    = 0.04;   // prune below this
+const MAX_ACTIVATION  = 0.85;   // hard ceiling — prevents any single concept dominating
+const ATTRACTOR_PENALTY = 0.7;  // scale-down for concepts activated > 3x in last 2s
 
 export class ConceptNet {
     constructor() {
@@ -100,18 +104,32 @@ export class ConceptNet {
     // Activate a concept by word token. Returns the concept or null.
     // This is what happens when the system hears a word — it activates the
     // concept cluster, not just a string lookup.
-    activate(word, strength = 1.0) {
+    activate(word, strength = 1.0, hopDepth = 0) {
         const token = word.toLowerCase().trim();
         const ids = this._wordIndex.get(token);
         if (!ids || ids.size === 0) return null;
 
+        // Decay strength per hop — limits spreading activation radius
+        const effectiveStrength = strength * Math.pow(HOP_DECAY, hopDepth);
+        if (effectiveStrength < 0.05) return null;
+
+        const now = Date.now();
         let strongest = null;
         for (const id of ids) {
             const c = this._concepts.get(id);
             if (!c) continue;
-            c.activation = Math.min(1, c.activation + strength * 0.4);
-            c.salience   = Math.min(1, c.salience + 0.05);
-            c.lastSeen   = Date.now();
+
+            // Attractor penalty: if this concept has been firing repeatedly,
+            // reduce how much more activation it can accumulate
+            const recentFires = (c._recentFires || 0);
+            const penalty = recentFires > 3 ? ATTRACTOR_PENALTY : 1.0;
+
+            const delta = effectiveStrength * 0.4 * penalty;
+            c.activation = Math.min(MAX_ACTIVATION, c.activation + delta);
+            c.salience   = Math.min(1, c.salience + 0.03);
+            c.lastSeen   = now;
+            c._recentFires = (c._recentFires || 0) + 1;
+
             if (!strongest || c.activation > strongest.activation) strongest = c;
         }
         return strongest;
@@ -159,18 +177,21 @@ export class ConceptNet {
         const b = this._findOrCreate(wordB);
         if (!a || !b || a.id === b.id) return;
 
-        // Cross-pollinate sensory features
+        // Cross-pollinate sensory features — capped to prevent runaway correlation
+        const featBlend = Math.min(strength, 0.4) * LEARN_RATE;
         for (const [feat, val] of Object.entries(b.sensory)) {
             const prev = a.sensory[feat] || 0;
-            a.sensory[feat] = prev + strength * LEARN_RATE * (val - prev);
+            a.sensory[feat] = prev + featBlend * (val - prev);
         }
         for (const [feat, val] of Object.entries(a.sensory)) {
             const prev = b.sensory[feat] || 0;
-            b.sensory[feat] = prev + strength * LEARN_RATE * (val - prev);
+            b.sensory[feat] = prev + featBlend * (val - prev);
         }
 
-        // Partial emotional blending — associated concepts pull each other's valence
-        const blend = strength * LEARN_RATE * 0.3;
+        // Emotional blending is strictly bounded — EMOTIONAL_BLEND caps total
+        // drift per call so high-arousal attractors (danger, pain) cannot
+        // pull unrelated concepts into their basin through repeated association.
+        const blend = Math.min(strength * LEARN_RATE * 0.3, EMOTIONAL_BLEND);
         a.emotion.valence += blend * (b.emotion.valence - a.emotion.valence);
         b.emotion.valence += blend * (a.emotion.valence - b.emotion.valence);
     }
@@ -202,9 +223,12 @@ export class ConceptNet {
         const now = Date.now();
         const active = [];
         for (const c of this._concepts.values()) {
-            // Decay activation
+            // Exponential decay — faster rate prevents stale attractors persisting
             const age = (now - c.lastSeen) / 1000;
-            c.activation *= Math.exp(-DECAY_RATE * age * 10);
+            c.activation *= Math.exp(-DECAY_RATE * age);
+            // Reset recent-fire counter on each snapshot so the attractor
+            // penalty resets between activation windows
+            c._recentFires = 0;
             if (c.activation > 0.05) active.push(c);
         }
         active.sort((a, b) => b.activation - a.activation);

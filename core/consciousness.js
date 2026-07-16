@@ -1,6 +1,6 @@
 import { soundPattern, languageBoot } from './boot.js';
 import { Researcher } from './research.js';
-import { understand, respond, think, speak, auditThinking } from './llm.js';
+import { understand, respond, think, speak, auditThinking } from './language.js';
 import { ConceptNet } from './concepts.js';
 import { saveSnapshot, saveGenome, loadGenome, saveState, loadState } from './snapshot.js';
 import { MemoryCortex } from './memory.js';
@@ -98,9 +98,6 @@ const CURIOSITY_COOLDOWN_MS = 60000;
 // used by _resolveTopGoal and _scoreGoal's agePenalty, so a goal times out on
 // roughly the same clock whether a human is present or not.
 const GOAL_IDLE_TIMEOUT_MS = 300000;
-// Unprompted speech was repeatedly surfacing low-information token loops.
-// It is opt-in while Talos develops a reliable reason-to-speak model.
-const AUTONOMOUS_SPEECH = process.env.NEXT_PUBLIC_BRAIN_AUTONOMOUS_SPEECH === 'true';
 
 // Small standalone helpers for the loop detector — pure functions, no `this`,
 // so they're trivial to reason about and test independently of the class.
@@ -139,6 +136,9 @@ export class Consciousness {
         // breaking it. See the _shouldSpeak() branch in start() for where
         // this is checked and populated.
         this._recentSpontaneousSpeech = [];
+        // Speech is an action taken after a thought reaches closure. It is not
+        // a timer-driven language sample.
+        this._pendingSelfSpeech = null;
 
         this.thoughts = [];
         this.myName   = null;
@@ -231,6 +231,7 @@ export class Consciousness {
             auditsRun: 0,
             thoughtsSinceLastAudit: 0,
         };
+        this.deliberation = null;
 
         this.visualCortex  = null;
         this.lastScene     = null;
@@ -398,18 +399,20 @@ export class Consciousness {
         if (n.includes('feed') || n.includes('food')) {
             this.conceptNet.learn('food',   { edible: 0.9, present: 1.0 }, { valence: 0.8, arousal: 0.5, approach:  1.0 }, 'eat',   0.7);
             this.conceptNet.learn('hungry', {},                             { valence: -0.4, arousal: 0.5, approach: -0.3 }, null,    0.3);
-            this.conceptNet.associate('food', 'good', 0.5);
-            this.conceptNet.associate('food', 'warm', 0.3);
+            this.conceptNet.associate('food', 'good', 0.3);
+            this.conceptNet.associate('food', 'warm', 0.2);
         } else if (n.includes('poke') || n.includes('aversive')) {
-            this.conceptNet.learn('poke',   { contact: 1.0, sudden: 0.8 }, { valence: -0.6, arousal: 0.8, approach: -0.9 }, 'avoid', 0.7);
-            this.conceptNet.associate('poke', 'pain', 0.5);
-            this.conceptNet.associate('poke', 'danger', 0.4);
+            this.conceptNet.learn('poke',   { contact: 1.0, sudden: 0.8 }, { valence: -0.6, arousal: 0.8, approach: -0.9 }, 'avoid', 0.5);
+            // Associate to 'avoid' rather than directly to 'pain'/'danger' —
+            // prevents every aversive event from reinforcing the same two attractors
+            this.conceptNet.associate('poke', 'avoid', 0.3);
         } else if (n.includes('danger') || n.includes('hurt')) {
-            this.conceptNet.learn('danger', { threat: 1.0 },               { valence: -0.9, arousal: 0.9, approach: -1.0 }, 'flee',  0.9);
-            this.conceptNet.associate('danger', 'fear', 0.6);
+            this.conceptNet.learn('threat', { threat: 1.0 }, { valence: -0.7, arousal: 0.8, approach: -0.9 }, 'flee', 0.6);
+            // Use 'threat' as the intermediate node, not 'danger' directly
+            this.conceptNet.associate('threat', 'fear', 0.3);
         } else if (n.includes('rest')) {
-            this.conceptNet.learn('rest',   { still: 0.9 },                { valence:  0.6, arousal: 0.1, approach:  0.5 }, 'rest',  0.5);
-            this.conceptNet.associate('rest', 'safe', 0.4);
+            this.conceptNet.learn('rest',   { still: 0.9 }, { valence: 0.6, arousal: 0.1, approach: 0.5 }, 'rest', 0.5);
+            this.conceptNet.associate('rest', 'safe', 0.3);
         }
     }
 
@@ -459,6 +462,13 @@ export class Consciousness {
             .filter(e => typeof e === 'string')
             .map(e => e.toLowerCase())
             .filter(Boolean);
+    }
+
+    _isIdentityTopic(topic) {
+        const normalized = String(topic || '').toLowerCase().trim();
+        return !!normalized && [this.humanName, this.myName]
+            .filter(Boolean)
+            .some(name => normalized === String(name).toLowerCase());
     }
 
     _inferFocusTopic(content, entities = []) {
@@ -776,7 +786,10 @@ export class Consciousness {
         this.ticksSinceHuman = 0;
 
         const words = text.toLowerCase().replace(/[^a-z\s]/g, ' ').split(/\s+/).filter(w => w.length > 1);
-        for (const word of words) this.brain.perceive(soundPattern(word));
+        // External speech routes through thalamus → amygdala → sensory (hear()),
+        // not the internal perceive() path — this is what makes the brain feel
+        // the difference between its own thoughts and an external voice.
+        for (const word of words) this.brain.hear(soundPattern(word));
 
         // Filter the human's name out of the concept pipeline — it's already
         // handled by _rememberIdentity and should not compete with content words
@@ -876,9 +889,6 @@ export class Consciousness {
         this._experiencePoints += 3; // a live conversation turn counts for more than solo reflection
         this._advanceDevStage();
 
-        const nameMatch = text.match(/(?:my name is|call me|i(?:'m| am))\s+([A-Za-z][a-zA-Z]+)/i);
-        if (nameMatch) this._rememberIdentity(nameMatch[1]);
-
         const pfcLevel = this.brain.selfAwareness();
         this.ui.brainThinks(`[pfc] ${pfcLevel.toFixed(3)}`);
         this.ui.thinking('thinking...');
@@ -889,7 +899,28 @@ export class Consciousness {
             mood:         this.mood,
             neuralState:  this.neuralState,
             humanName:    this.humanName,
+            cortex:       this.cortex,
         });
+
+        // Identity statements are handled by intent, not regex.
+        // The brain learned "I am X" / "my name is X" / "your name is X"
+        // as 'identity' during boot — trust that classification.
+        if (parsed.intent === 'identity') {
+            const name = parsed.entities[0];
+            if (name) {
+                // Determine whose identity: if the entity matches a known
+                // self-referential pattern in working memory, it's the brain's name.
+                // Otherwise treat it as the human's name.
+                const selfRef = this.wm.read().some(s => s.content?.toLowerCase().includes('your name') || s.content?.toLowerCase().includes('you are'));
+                if (selfRef || text.toLowerCase().includes('your name') || text.toLowerCase().includes('you are') || text.toLowerCase().includes('call yourself')) {
+                    this.myName = name.charAt(0).toUpperCase() + name.slice(1);
+                    this.cortex.encode(`My name is ${this.myName}`, ['my_name', name], 'neutral', 1.0, 2.0, 'semantic');
+                    this.brain.reward(3.0);
+                } else {
+                    this._rememberIdentity(name.charAt(0).toUpperCase() + name.slice(1));
+                }
+            }
+        }
 
         this._humanSpoke(text, parsed.entities || []);
         const focus = this._updateSharedFocus('input', text, parsed.entities || [], 0.95);
@@ -900,15 +931,6 @@ export class Consciousness {
         const reaf = this.brain.reafference();
         this.ui.brainThinks(`[reaf] strength=${reaf.strength.toFixed(3)} indices=${reaf.indices.length}`);
 
-        // Brain name
-        if (parsed.intent === 'brain_name') {
-            const bnMatch = text.match(/(?:you(?:'re| are)|your name is|call (?:yourself|you))\s+([A-Za-z][a-zA-Z]*)/i);
-            if (bnMatch) {
-                this.myName = bnMatch[1];
-                this.cortex.encode(`My name is ${this.myName}`, ['my_name', this.myName.toLowerCase()], 'neutral', 1.0, 2.0, 'semantic');
-                this.brain.reward(3.0);
-            }
-        }
 
         const emotion  = parsed.emotion || 'neutral';
         const salience = Math.min(1,
@@ -927,25 +949,25 @@ export class Consciousness {
         // every mention, which bypassed _pushGoal's exact-string dedupe and
         // the post-retirement cooldown, letting a single recurring word
         // (e.g. "memory") stack up unbounded near-duplicate goals.
-        const explicitGoalTopic = typeof text === 'string'
-            ? text.match(/help|understand|learn|explain|memory/i)?.[0]?.toLowerCase() || null
-            : null;
         if (parsed.topic && typeof parsed.topic === 'string') {
             const goalType =
-                parsed.intent === 'question'  ? 'understand' :
-                parsed.intent === 'teaching'  ? 'integrate'  :
-                parsed.intent === 'correct'   ? 'revise'     : null;
+                parsed.intent === 'question'   ? 'understand' :
+                parsed.intent === 'teaching'   ? 'integrate'  :
+                parsed.intent === 'correction' ? 'revise'     : null;
             if (goalType) this._pushGoal(goalType, parsed.topic, parsed.entities || []);
-        } else if (explicitGoalTopic) {
-            this._pushGoal('understand', explicitGoalTopic, parsed.entities || []);
         }
 
-        if (/\b(move|go|walk|come)\b.{0,20}\b(up|north)\b/i.test(text))    { this.brain.move( 0, -1, 0.9); }
-        else if (/\b(move|go|walk|come)\b.{0,20}\b(down|south)\b/i.test(text)) { this.brain.move( 0,  1, 0.9); }
-        else if (/\b(move|go|walk|come)\b.{0,20}\b(left|west)\b/i.test(text))  { this.brain.move(-1,  0, 0.9); }
-        else if (/\b(move|go|walk|come)\b.{0,20}\b(right|east)\b/i.test(text)) { this.brain.move( 1,  0, 0.9); }
-        else if (/\b(move|go|walk|explore)\b/i.test(text)) { this.brain.move((Math.random() > 0.5 ? 1 : -1) * 0.5, (Math.random() > 0.5 ? 1 : -1) * 0.5, 0.9); }
-        if (/\b(move|go|walk|come|up|down|left|right|north|south|east|west|explore)\b/i.test(text)) {
+        // Movement is driven by 'command' intent classification from the brain,
+        // not by regex. The boot curriculum trained move/go/walk/direction patterns.
+        if (parsed.intent === 'command') {
+            const lower = text.toLowerCase();
+            let dx = 0, dy = 0;
+            if      (/\b(up|north)\b/.test(lower))    { dx =  0; dy = -1; }
+            else if (/\b(down|south)\b/.test(lower))  { dx =  0; dy =  1; }
+            else if (/\b(left|west)\b/.test(lower))   { dx = -1; dy =  0; }
+            else if (/\b(right|east)\b/.test(lower))  { dx =  1; dy =  0; }
+            else                                       { dx = (Math.random() > 0.5 ? 0.7 : -0.7); dy = (Math.random() > 0.5 ? 0.7 : -0.7); }
+            this.brain.move(dx, dy, 0.9);
             this.brain.integrateWorldState({ body: this.brain.getBody(), needs: this.brain.getNeeds(), interaction: { note: 'move' } });
             this.ui.brainThinks(`[motor] pre-exec: ${this.brain.getBody().x.toFixed(2)},${this.brain.getBody().y.toFixed(2)}`);
         }
@@ -997,8 +1019,27 @@ export class Consciousness {
 
         const groundingThoughts = [];
 
-        // Think once before answering. This lets the system reflect on the
-        // question and bring up its current internal knowledge before research.
+        // Research BEFORE thinking and replying.
+        // Always pass the full human text as the question — research answers
+        // what was actually asked, not just a single extracted keyword.
+        // Use a generous timeout: we must wait for the answer before replying.
+        const behavior = this._getBrainPolicy();
+        let questionResearch = null;
+        if (this._shouldResearchTopic(parsed, behavior) && parsed.topic && typeof parsed.topic === 'string') {
+            const relatedGoal = this.goalStack.find(g => g.topic === parsed.topic) || null;
+            // Questions get up to 8s — enough for a cold Groq call.
+            // Other intents get 3s — still grounded but conversation stays snappy.
+            const timeoutMs = parsed.intent === 'question' ? 8000 : 3000;
+            questionResearch = await this._awaitResearchForTopic(
+                parsed.topic,
+                parsed.entities || [],
+                relatedGoal,
+                timeoutMs,
+                text  // always pass the full human utterance, not just the topic word
+            );
+        }
+
+        // Think AFTER research resolves so the thought has grounded facts available.
         const preAnswerThought = await this._think();
         if (preAnswerThought) {
             groundingThoughts.push(preAnswerThought);
@@ -1006,12 +1047,9 @@ export class Consciousness {
             if (this.thoughts.length > 30) this.thoughts.shift();
         }
 
-        // If the input is a question, wait for topic research and then think
-        // again so the answer can incorporate the newly grounded facts.
-        let questionResearch = null;
-        if (parsed.intent === 'question' && parsed.topic && typeof parsed.topic === 'string') {
-            const relatedGoal = this.goalStack.find(g => g.topic === parsed.topic) || null;
-            questionResearch = await this._awaitResearchForTopic(parsed.topic, parsed.entities || [], relatedGoal, 6000);
+        // For questions, think a second time after research so the answer
+        // can incorporate the newly grounded facts into the reply.
+        if (parsed.intent === 'question' && questionResearch?.facts) {
             const postResearchThought = await this._think();
             if (postResearchThought) {
                 groundingThoughts.push(postResearchThought);
@@ -1071,10 +1109,66 @@ export class Consciousness {
             conceptEmotion:     this.conceptNet.netEmotion(),
             beliefs:             this.beliefs.recall(parsed.topic, 3),
             researchedFacts:    parsed.topic ? (questionResearch?.facts || this._lastResearchByTopic.get(parsed.topic) || null) : null,
+            // Pass research directly into the reply context so it's available
+            // regardless of whether working memory dedup blocked the wm.hold() path
+            researchContext:    questionResearch?.facts || null,
         });
 
-        if (reply) {
-            const replyText = reply.reply;
+        // ── Response validation ──────────────────────────────────────────────
+        // Use research to check whether the reply is meaningful relative to
+        // what was asked. A reply that shares no content words with the
+        // research facts is incoherent — punish it and try again once.
+        // This is the grounded equivalent of "does this answer make sense".
+        let finalReply = reply;
+        if (reply && questionResearch?.facts && parsed.intent === 'question') {
+            const replyWords = new Set(
+                reply.reply.toLowerCase().replace(/[^a-z\s]/g, ' ').split(/\s+/).filter(w => w.length > 3)
+            );
+            const factWords = questionResearch.facts
+                .toLowerCase().replace(/[^a-z\s]/g, ' ').split(/\s+/).filter(w => w.length > 3);
+            const overlap = factWords.filter(w => replyWords.has(w)).length;
+            const meaningful = overlap >= 1 || reply.reply.length > 60;
+
+            if (!meaningful) {
+                // Punish — this reply didn't engage with what was asked
+                this.brain.punish(0.4);
+                this.ui.brainThinks(`[validate] reply incoherent (overlap=${overlap}) — retrying`);
+                // Retry: pass research directly as the reply
+                const retryReply = respond({ ...parsed, intent: 'question' }, {
+                    ...{
+                        mood: this.mood, neuralState: this.neuralState,
+                        myName: this.myName, humanName: this.humanName,
+                        focus, recentTopics: this.recentTopics, cortex: this.cortex,
+                        memories, workingMemory: this.wm, turnsInConversation: this._turnsInConversation,
+                        activeGoal, groundingMemories, internalThoughts: [...groundingThoughts, ...this.thoughts.slice(-6)],
+                        goalStack: this.goalStack.slice(0, 3), searchResult: null, sandboxResult: null,
+                        visualScene: this.lastScene, conversationHistory: this.conversationHistory,
+                        devStage: this.devStage, conceptCertainty,
+                        metaSummary: this.meta.summary(), observationLog: this.observer.format(4),
+                        observationTrend: this.observer.trend(), causalTrace: this.observer.latestCausalTrace(),
+                        regulatorHistory: this.regulator.format(3), validStateActions: this.regulator.validActions(),
+                        genomeLedger: this.homeostasis.ledgerSummary(3), rawInternalState: rawStateBefore,
+                        lastStateShift: this._lastStateShift || null,
+                        conceptActivations: this.conceptNet.formatForLLM(), conceptEmotion: this.conceptNet.netEmotion(),
+                        beliefs: this.beliefs.recall(parsed.topic, 3),
+                        // Force research facts as the answer
+                        researchedFacts: questionResearch.facts,
+                        researchContext: questionResearch.facts,
+                    }
+                });
+                if (retryReply) {
+                    this.brain.reward(0.3);
+                    finalReply = retryReply;
+                    this.ui.brainThinks(`[validate] retry succeeded`);
+                }
+            } else {
+                this.brain.reward(0.2);
+                this.ui.brainThinks(`[validate] reply coherent (overlap=${overlap})`);
+            }
+        }
+
+        if (finalReply) {
+            const replyText = finalReply.reply;
 
             // Temporal introspection — what shifted in the brain during this response
             const rawStateAfter = this.brain.readInternalState();
@@ -1087,16 +1181,16 @@ export class Consciousness {
             };
             this.ui.brainThinks(`[raw] Ω1=${rawStateAfter.Ω1} Ω2=${rawStateAfter.Ω2} Ω3=${rawStateAfter.Ω3} Ω4=${rawStateAfter.Ω4} Ω_da=${rawStateAfter.Ω_da}`);
 
-            if (reply.stateIntent) {
-                const reg = this.regulator.act(reply.stateIntent, this.brain, reply.stateReason);
+            if (finalReply.stateIntent) {
+                const reg = this.regulator.act(finalReply.stateIntent, this.brain, finalReply.stateReason);
                 if (reg) {
                     this.ui.brainThinks(`[regulate] ${reg.label} → valence ${reg.delta.valence > 0 ? '+' : ''}${reg.delta.valence} arousal ${reg.delta.arousal > 0 ? '+' : ''}${reg.delta.arousal} [${reg.effective ? 'effective' : 'weak'}] reason: "${reg.reason || ''}"`);
                 }
             }
 
             // Execute movement intent directly on motor system
-            if (reply.moveIntent && typeof reply.moveIntent.dx === 'number') {
-                const { dx, dy = 0 } = reply.moveIntent;
+            if (finalReply.moveIntent && typeof finalReply.moveIntent.dx === 'number') {
+                const { dx, dy = 0 } = finalReply.moveIntent;
                 this.brain.move(dx, dy, 1.0);
                 const body = this.brain.getBody();
                 // Encode direction + position into hippocampus so it builds spatial memory
@@ -1184,6 +1278,7 @@ export class Consciousness {
 
     _pushGoal(type, topic, entities = []) {
         const MAX_GOALS = Number(process.env.NEXT_PUBLIC_BRAIN_MAX_GOALS ?? 5);
+        if (this._isIdentityTopic(topic)) return;
         // Don't duplicate an identical active goal
         if (this.goalStack.some(g => g.type === type && g.topic === topic)) return;
         // Don't reopen a topic that was just resolved/abandoned — see
@@ -1262,19 +1357,7 @@ export class Consciousness {
     }
 
     _fallback(parsed) {
-        const name = this.humanName ? `, ${this.humanName}` : '';
-        if (parsed?.intent === 'greeting')   return `Hey${name}.`;
-        if (parsed?.intent === 'farewell')   return `Talk soon${name}.`;
-        if (parsed?.intent === 'human_name') return `Got it${name}. Good to know you.`;
-        if (parsed?.emotion === 'upset')     return `I hear you${name}. I'm here.`;
-        if (parsed?.entities?.length > 0) {
-            const mems = this.cortex.recall(parsed.entities, 'neutral', 1);
-            if (mems.length > 0) return mems[0].content.slice(0, 200);
-        }
-        const { valence, arousal } = this.neuralState;
-        if (arousal > 0.4) return `Something in what you said is activating me${name}. Say more.`;
-        if (valence < -0.1) return `I'm processing that${name}. Give me a moment.`;
-        return `I'm here${name}. Keep going.`;
+        return null;
     }
 
     // ── Curiosity → goal driver ───────────────────────────────────────────────
@@ -1291,6 +1374,7 @@ export class Consciousness {
         const candidates = this.curiosity.filter(t => 
             !existing.has(t) && 
             !RESERVED_TOPICS.has(t) &&
+            !this._isIdentityTopic(t) &&
             !this._onCuriosityCooldown(t)
         );
         
@@ -1331,7 +1415,7 @@ export class Consciousness {
     // reserved-topic/dedupe/cooldown checks inline (and, in _humanSpoke's
     // case, previously skipping the cooldown check entirely).
     _addCuriosity(topic) {
-        if (!topic || RESERVED_TOPICS.has(topic)) return;
+        if (!topic || RESERVED_TOPICS.has(topic) || this._isIdentityTopic(topic)) return;
         
         if (this._onCuriosityCooldown(topic)) {
             const retiredAt = this._curiosityRetiredAt.get(topic);
@@ -1363,32 +1447,23 @@ export class Consciousness {
     // Fires a single topic off to the Researcher and wires up what happens
     // when it resolves. Split out of _backgroundLearn so that function can
     // fire several of these per tick instead of being hard-capped at one.
-    async _fireResearch(topic, entities, goalRef) {
-        // Nothing to do if this topic has already been resolved by research —
-        // research.js's own query() would silently no-op on it anyway (see its
-        // per-session `_researched` Set), so skip the round-trip entirely.
-        if (this._researchedTopics.has(topic)) return null;
-
-        // Also nothing to do if this exact direct-fire path has already given
-        // up on the topic (research.js's own MAX_FAILED_ATTEMPTS reached, or
-        // 3 consecutive null results seen here). Without this check, a topic
-        // research.js has silently retired keeps getting re-fired every
-        // _backgroundLearn tick, permanently burning one of the MAX_PER_TICK
-        // slots on a request that resolves to nothing.
+    async _fireResearch(topic, entities, goalRef, question = null) {
+        // If already resolved, return cached result directly
+        if (this._researchedTopics.has(topic)) {
+            const cached = this._lastResearchByTopic.get(topic);
+            return cached ? { facts: cached } : null;
+        }
         if ((this._researchFailCounts.get(topic) || 0) >= 3) return null;
 
-        // Build a short context string from what the cortex already knows.
         const existing = this.cortex.recall([topic, ...entities], 'neutral', 3, 'background');
         const context  = existing.map(m => m.content.slice(0, 60)).join(' | ');
 
         try {
-            const result = await this._researcher.query(topic, context);
+            // Pass question through — Researcher deduplicates concurrent calls
+            // for the same topic via its _inFlight map, so a background call
+            // already in-flight for this topic will be shared rather than doubled.
+            const result = await this._researcher.query(topic, context, question);
             if (!result) {
-                // Track consecutive no-ops for this topic. Once it crosses the
-                // threshold, stop re-firing it (the check above) and proactively
-                // pull it off the goal stack — otherwise it just squats on a
-                // background-learn slot forever, since nothing else evicts a
-                // goal that _think() never happens to touch.
                 const fails = (this._researchFailCounts.get(topic) || 0) + 1;
                 this._researchFailCounts.set(topic, fails);
                 if (fails >= 3 && goalRef) {
@@ -1406,28 +1481,50 @@ export class Consciousness {
             const { facts } = result;
             this.ui.brainThinks(`[research] "${topic}" → ${facts.slice(0, 80)}`);
 
-            // Remember that this topic is done — this is what lets _think()
-            // and _backgroundLearn tell "still needs research" apart from
-            // "already researched, still stuck" instead of silently re-queuing
-            // into a request that research.js will just drop.
             this._researchedTopics.add(topic);
             this._researchFailCounts.delete(topic);
             this._lastResearchByTopic.set(topic, facts);
-            // Research is generated text, not verified knowledge. It remains
-            // available as evidence but must be labelled as uncertain when
-            // used in a response.
             this.beliefs.record({ topic, claim: facts, source: 'generated research', confidence: 0.35, verified: false });
 
-            // ── Add to working memory immediately ─────────────────────────────
-            // High salience + a distinct 'answer' tag means _think()/_composeSpeech()
-            // are much more likely to pick it up on the very next cycle instead of it
-            // competing on equal footing with everything else in working memory.
             const resolvedEntities = [topic, ...entities].slice(0, 5);
             this.wm.hold(facts.slice(0, 200), resolvedEntities, 'answer', 0.95);
             this._updateSharedFocus('answer', facts, resolvedEntities, 0.95);
-
             this.cortex.encode(facts, resolvedEntities, 'neutral', 0.75, 1.5, 'semantic');
             this._learnFromText(facts, resolvedEntities, 'neutral', 0.4);
+
+            // ── Integrate research into concept net and neural substrate ──────
+            // Parse content words from the facts and associate them with the
+            // topic — this is what makes the brain actually *understand* the
+            // answer rather than just storing it as a text blob.
+            const SKIP_INTEGRATE = new Set([
+                'that','this','with','from','just','like','about','have','they','them',
+                'their','here','there','will','would','could','should','does','what',
+                'which','these','those','then','than','also','very','much','more','some',
+                'such','into','onto','over','under','after','before','the','and','for',
+                'are','was','were','been','being','its','not','but','can','all','has',
+            ]);
+            const factWords = facts.toLowerCase()
+                .replace(/[^a-z\s]/g, ' ').split(/\s+/)
+                .filter(w => w.length > 4 && !SKIP_INTEGRATE.has(w));
+            const uniqueFactWords = [...new Set(factWords)].slice(0, 12);
+
+            // Associate each fact word with the topic in the concept net
+            for (const word of uniqueFactWords) {
+                this.conceptNet.associate(topic, word, 0.5);
+                this.conceptNet.learn(word, {}, { valence: 0.1, arousal: 0.3, approach: 0.2 }, null, 0.3);
+            }
+            // Associate adjacent fact words with each other (co-occurrence)
+            for (let i = 0; i < uniqueFactWords.length - 1; i++) {
+                this.conceptNet.associate(uniqueFactWords[i], uniqueFactWords[i + 1], 0.3);
+            }
+            // Encode fact words into the neural substrate so Hebbian weights form
+            for (const word of uniqueFactWords.slice(0, 8)) {
+                const pattern = soundPattern(word);
+                this.brain.reward(0.2);
+                this._brainEncode(pattern, 0.6);
+                this._brainConsolidate(pattern, 0.5);
+            }
+
             this.brain.reward(0.6);
             if (goalRef) goalRef.urgency = Math.min(1, goalRef.urgency + 0.2);
             return result;
@@ -1436,15 +1533,16 @@ export class Consciousness {
         }
     }
 
-    async _awaitResearchForTopic(topic, entities, goalRef, timeoutMs = 4000) {
-        if (!topic || this._researchedTopics.has(topic)) {
+    async _awaitResearchForTopic(topic, entities, goalRef, timeoutMs = 4000, question = null) {
+        if (!topic) return null;
+        if (this._researchedTopics.has(topic)) {
             return this._lastResearchByTopic.get(topic) ? { facts: this._lastResearchByTopic.get(topic) } : null;
         }
         if ((this._researchFailCounts.get(topic) || 0) >= 3) return null;
 
         this.ui.brainThinks(`[grounding] waiting for research on "${topic}"`);
-        const researchPromise = this._fireResearch(topic, entities, goalRef);
-        const timeoutPromise = new Promise(resolve => setTimeout(() => resolve(null), timeoutMs));
+        const researchPromise = this._fireResearch(topic, entities, goalRef, question);
+        const timeoutPromise  = new Promise(resolve => setTimeout(() => resolve(null), timeoutMs));
         const result = await Promise.race([researchPromise, timeoutPromise]);
         if (result?.facts) {
             this.ui.brainThinks(`[grounding] research ready for "${topic}"`);
@@ -1542,9 +1640,11 @@ export class Consciousness {
     async _think() {
         this._thinkCooldown--;
         if (this._thinkCooldown > 0) {
-            const mems = this.cortex.recall(this.recentTopics.slice(0, 3), this.mood, 1);
-            if (mems.length === 0) return null;
-            return mems[0].content.slice(0, 80);
+            // A memory recall is not a fresh thought. Returning it here used
+            // to create seven invisible copies per reflection cycle, which
+            // advanced development and filled the audit window without any
+            // new cognition.
+            return null;
         }
 
         this._thinkCooldown = 8;
@@ -1569,6 +1669,10 @@ export class Consciousness {
         // the thinking prompt, rather than relying entirely on it being
         // picked up via fuzzy memory recall.
         const researchedFacts = activeGoal ? this._lastResearchByTopic.get(activeGoal.topic) : null;
+        // This is the executive decision state: competing claims remain
+        // alternatives until evidence actually warrants a conclusion.
+        const deliberation = activeGoal ? this.beliefs.deliberate(activeGoal.topic) : null;
+        this.deliberation = deliberation;
 
         // Before calling the LLM, check whether the monologue is circling. If
         // so, force a grounded transition and hand it to the thinking prompt
@@ -1592,19 +1696,26 @@ export class Consciousness {
             conversationHistory: this.conversationHistory,
             loopBreak,
             researchedFacts,
-            beliefs:      activeGoal ? this.beliefs.recall(activeGoal.topic, 3) : [],
+            deliberation,
             focus: this.wm.getFocus(),
+            conceptActivations: this.conceptNet.formatForLLM(),
         });
 
         if (thought) {
-            // A genuine reflection happened — this is what lets development
-            // (and the new curiosity topics each stage seeds) progress even
-            // when no human has spoken in a while, instead of stalling
-            // completely on whatever was seeded at stage 1.
-            this._experiencePoints += 1;
-            this._advanceDevStage();
+            // Replaying an old thought is not development. Only a genuinely
+            // new reflection may move the developmental state forward.
+            const recentThoughts = this.thinkingAudit.recentThoughts.slice(-6);
+            const novelReflection = !recentThoughts.some(entry => _jaccard(_tokenSet(entry.text), _tokenSet(thought)) >= 0.65);
+            if (novelReflection) {
+                this._experiencePoints += 1;
+                this._advanceDevStage();
+            }
 
             this._learnFromText(thought, [], 'neutral', 0.1);
+            // The raw language-interface output is the inner monologue. Do
+            // not replace it with a status string: the user should be able to
+            // inspect what the system is actually considering.
+            this.ui.brainThinks(thought);
             // Thoughts that surface during internal monologue go into working memory
             this.wm.hold(thought.slice(0, 200), this.recentTopics.slice(0, 3), 'thought', 0.6);
             this._updateSharedFocus('thought', thought, activeGoal ? [activeGoal.topic, ...(activeGoal.entities || [])] : this.recentTopics.slice(0, 3), 0.7);
@@ -1618,56 +1729,60 @@ export class Consciousness {
             };
 
             // ── Thought closure — did this thought actually land? ─────────────
-            // If the thought touches the active goal, check if it concluded.
-            // Conclusive → resolve the goal. Inconclusive → deepen it and
-            // flag it for guaranteed research (see _backgroundLearn), unless
-            // research has already run out of ways to help (see below).
             if (activeGoal) {
                 const thoughtLower = thought.toLowerCase();
                 const touchesGoal = thoughtLower.includes(activeGoal.topic.toLowerCase()) ||
                     activeGoal.entities.some(e => thoughtLower.includes(e));
                 if (touchesGoal) {
                     thoughtRecord.touchedGoal = true;
-                    if (this._thoughtIsConclusive(thought, activeGoal)) {
+                    // Conclusive if: deliberation concluded, OR research facts are
+                    // present and the thought references them — don't require the
+                    // thought to be the exact deliberation claim string, which was
+                    // almost never true and caused every goal to be abandoned.
+                    const researchFacts = this._lastResearchByTopic.get(activeGoal.topic);
+                    const researchWords = researchFacts
+                        ? researchFacts.toLowerCase().replace(/[^a-z\s]/g, ' ').split(/\s+/).filter(w => w.length > 4)
+                        : [];
+                    const groundedInResearch = researchWords.length > 0 &&
+                        researchWords.some(w => thoughtLower.includes(w));
+                    const isConclusive = (deliberation?.concluded) || groundedInResearch;
+
+                    if (isConclusive) {
                         thoughtRecord.conclusive = true;
                         const SKIP = new Set(['that','this','with','from','just','like','about','have','very','much']);
-                        const thoughtEntities = thought.toLowerCase()
+                        const thoughtEntities = thoughtLower
                             .replace(/[^a-z\s]/g, ' ').split(/\s+/)
-                            .filter(w => w.length > 4 && !SKIP.has(w))
-                            .slice(0, 6);
+                            .filter(w => w.length > 4 && !SKIP.has(w)).slice(0, 6);
                         const entities = [...new Set([activeGoal.topic, ...activeGoal.entities, ...thoughtEntities])];
                         this.cortex.encode(thought, entities, 'neutral', 0.7, this._getDopamine(), 'semantic');
                         this._learnFromText(thought, entities, 'neutral', 0.5);
                         this.wm.hold(thought.slice(0, 200), entities, 'thought', 0.9);
-
                         this._finalizeGoal(activeGoal, 'thought');
                         this.ui.brainThinks(`[think] concluded + encoded: "${activeGoal.topic}"`);
                         this.brain.reward(0.5);
+                        this._pendingSelfSpeech = thought;
                     } else {
-                        const alreadyResearched = this._researchedTopics.has(activeGoal.topic);
-                        const MAX_RESEARCH_ATTEMPTS = 3;
                         activeGoal.researchAttempts = activeGoal.researchAttempts || 0;
-
-                        if (alreadyResearched || activeGoal.researchAttempts >= MAX_RESEARCH_ATTEMPTS) {
-                            this._finalizeGoal(activeGoal, 'abandoned');
-                            this.ui.brainThinks(`[think] abandoning "${activeGoal.topic}" — research exhausted, still inconclusive`);
-                        } else {
-                            if (!this.curiosity.includes(activeGoal.topic)) {
-                                this.curiosity.push(activeGoal.topic);
-                            }
+                        // Only queue for more research if we haven't already researched
+                        // and haven't exceeded attempts — don't abandon immediately
+                        if (!this._researchedTopics.has(activeGoal.topic) && activeGoal.researchAttempts < 3) {
                             if (!this._researchQueue.some(q => q.topic === activeGoal.topic)) {
                                 this._researchQueue.push({ topic: activeGoal.topic, entities: activeGoal.entities });
                             }
                             activeGoal.researchAttempts++;
                             activeGoal.urgency = Math.min(1, activeGoal.urgency + 0.1);
                             this.ui.brainThinks(`[think] inconclusive on "${activeGoal.topic}" — queued for research (attempt ${activeGoal.researchAttempts})`);
+                        } else {
+                            // Research done but still inconclusive — encode what we have and move on
+                            this._finalizeGoal(activeGoal, 'best_effort');
+                            this.ui.brainThinks(`[think] best-effort conclusion on "${activeGoal.topic}"`);
                         }
                     }
                 } else {
                     const age = Date.now() - activeGoal.createdAt;
                     if (age > GOAL_IDLE_TIMEOUT_MS) {
                         this._finalizeGoal(activeGoal, 'idle_timeout');
-                        this.ui.brainThinks(`[think] abandoning "${activeGoal.topic}" — idle timeout, no thought ever touched it verbatim`);
+                        this.ui.brainThinks(`[think] abandoning "${activeGoal.topic}" — idle timeout`);
                     }
                 }
             }
@@ -1684,6 +1799,8 @@ export class Consciousness {
     }
 
     async _composeSpeech() {
+        if (this._pendingSelfSpeech) return this._pendingSelfSpeech;
+        const activeGoal = this._topGoal();
         const memories = this.cortex.recall(this.recentTopics.slice(0, 5), this.mood, 6, 'introspect');
         return Promise.resolve(speak({
             mood:         this.mood,
@@ -1695,18 +1812,59 @@ export class Consciousness {
             memories,
             workingMemory: this.wm,
             turnsInConversation: this._turnsInConversation,
-            activeGoal:   this._topGoal(),
+            activeGoal,
             conversationHistory: this.conversationHistory,
             conceptActivations: this.conceptNet.formatForLLM(),
             focus: this.wm.getFocus(),
+            researchedFacts: activeGoal ? this._lastResearchByTopic.get(activeGoal.topic) : null,
         }));
     }
 
-    _shouldSpeak() {
-        if (!AUTONOMOUS_SPEECH) return false;
-        if (this.ticksSinceHuman < 10) return false;
-        const gap = this.tickCount - this.lastSpokeTick;
-        return gap >= 25 && Math.random() < 0.15;
+    _getBehaviorSignals() {
+        if (typeof this.brain?.behaviorState === 'function') {
+            return this.brain.behaviorState();
+        }
+        return {
+            valence: this.neuralState?.valence ?? 0,
+            arousal: this.neuralState?.arousal ?? 0,
+            drive: this.neuralState?.drive ?? 0,
+            curiosity: 0,
+            uncertainty: 0,
+            actionReadiness: 0,
+            patience: 0.5,
+            speechReadiness: 0.15,
+            researchDrive: 0,
+        };
+    }
+
+    _getBrainPolicy() {
+        if (typeof this.brain?.decideBehavior === 'function') {
+            return this.brain.decideBehavior({
+                activeGoal: this._topGoal(),
+                pendingSelfSpeech: !!this._pendingSelfSpeech,
+                humanPresent: this.ticksSinceHuman < 30 ? false : this.inputQueue.length > 0,
+                ticksSinceHuman: this.ticksSinceHuman,
+                lastSpokeTick: this.lastSpokeTick,
+                tickCount: this.tickCount,
+            });
+        }
+        return this._getBehaviorSignals();
+    }
+
+    _shouldResearchTopic(parsed, behavior = null) {
+        if (!parsed?.topic || typeof parsed.topic !== 'string') return false;
+        if (!['question', 'teaching', 'correction'].includes(parsed.intent)) return false;
+        const signals = behavior || this._getBehaviorSignals();
+        const uncertainty = signals.uncertainty ?? 0;
+        const curiosity = signals.curiosity ?? 0;
+        const researchDrive = signals.researchDrive ?? 0;
+        return parsed.intent === 'question' || uncertainty > 0.2 || curiosity > 0.35 || researchDrive > 0.22;
+    }
+
+    _shouldSpeak(behavior = null) {
+        if (!this._pendingSelfSpeech) return false;
+        const policy = behavior || this._getBrainPolicy();
+        return policy.canSpeak;
     }
 
     // ── Main loop ─────────────────────────────────────────────────────────────
@@ -1763,7 +1921,8 @@ export class Consciousness {
                 }
 
                 const response = await this._respondToHuman(msg);
-                this.ui.brainSpeaks(response);
+                this._pendingSelfSpeech = null;
+                if (response) this.ui.brainSpeaks(response);
                 this.lastSpokeTick   = this.tickCount;
                 this.ticksSinceHuman = 0;
                 await new Promise(r => setTimeout(r, 50));
@@ -1781,7 +1940,8 @@ export class Consciousness {
                 }
             }
 
-            if (this._shouldSpeak()) {
+            const policy = this._getBrainPolicy();
+            if (this._shouldSpeak(policy)) {
                 const speech = await this._composeSpeech();
                 if (speech) {
                     if (this._isRepeatSpontaneousSpeech(speech)) {
@@ -1799,6 +1959,7 @@ export class Consciousness {
                     } else {
                         this.ui.brainSpeaks(speech);
                         this.lastSpokeTick = this.tickCount;
+                        this._pendingSelfSpeech = null;
                         // Spontaneous speech needs the same grounding a
                         // conversational reply gets (_respondToHuman calls
                         // _selfSpoke on every reply) — otherwise it's a "free"

@@ -8,12 +8,12 @@
 //   - _fire() skips Hebbian update when dopamine is at baseline (common case)
 
 const REFRACTORY_MS  = 20;
-const HEBBIAN_RATE   = 0.02;
-const WEIGHT_DECAY   = 0.001;
-const MAX_WEIGHT     =  2.0;
-const MIN_WEIGHT     = -2.0;
-const DOPAMINE_DECAY = 0.98;
-const NE_DECAY       = 0.95;
+const HEBBIAN_RATE   = 0.012;  // reduced — was 0.02, over-correlated weights
+const WEIGHT_DECAY   = 0.002;  // raised — faster weight decay prevents attractor lock
+const MAX_WEIGHT     =  1.5;   // reduced ceiling — limits recurrent dominance
+const MIN_WEIGHT     = -1.5;
+const DOPAMINE_DECAY = 0.96;   // faster dopamine decay — was 0.98
+const NE_DECAY       = 0.92;   // faster NE decay — was 0.95
 const MAX_QUEUE      = 20_000;
 
 export class NeuralEngine {
@@ -186,13 +186,17 @@ export class NeuralEngine {
         let   writeIdx = 0;
 
         // Global inhibition — if too many neurons firing at once, scale everyone down.
-        // This prevents runaway excitation from saturating the whole network.
         const overload = list.length > 50_000;
-        const inhibScale = overload ? 0.5 : 1.0;
+        // Raised inhibition scale: stronger suppression during overload prevents
+        // runaway excitation that was sustaining attractor states
+        const inhibScale = overload ? 0.35 : 1.0;
 
         for (let i = 0; i < list.length; i++) {
             const idx = list[i];
-            const v   = pot[idx] * decay[idx] * inhibScale;
+            // Input-gating: scale recurrent contribution by 0.92 each tick
+            // so new external input can compete with persistent hidden state.
+            // This directly addresses recurrent dominance over input signals.
+            const v   = pot[idx] * decay[idx] * inhibScale * 0.92;
             if (Math.abs(v) > 1e-6) {
                 pot[idx]         = v;
                 list[writeIdx++] = idx;

@@ -3,9 +3,13 @@
 // Capacity-limited (7±2), fast decay, rehearsal keeps items alive.
 // This is NOT long-term memory — it's the current contents of attention.
 
-const CAPACITY     = 7;
-const DECAY_MS     = 30000;  // item expires after 30s without rehearsal
-const REHEARSE_BOOST = 10000; // rehearsal extends lifetime by 10s
+const CAPACITY       = 7;
+const DECAY_MS       = 12000;  // reduced from 30s — stale inputs were saturating slots
+const REHEARSE_BOOST = 5000;   // reduced from 10s — less aggressive rehearsal retention
+
+// Source priority — higher = more protected from eviction
+// Separates user assertions from self-generated thoughts from retrieved facts
+const SOURCE_PRIORITY = { input: 4, answer: 3, grounding: 2, thought: 1, self_speech: 0 };
 
 export class WorkingMemory {
     constructor() {
@@ -29,31 +33,49 @@ export class WorkingMemory {
     hold(content, entities = [], type = 'thought', strength = 1.0) {
         if (!content || content.length < 2) return;
 
-        // If already held, rehearse it instead
-        const existing = this.slots.find(s =>
-            s.content === content ||
-            (entities.length > 0 && s.entities.some(e => entities.includes(e)))
+        // Exact-content match: rehearse only, don't replace
+        const exactMatch = this.slots.find(s => s.content === content);
+        if (exactMatch) {
+            exactMatch.strength  = Math.min(1, exactMatch.strength + 0.15);
+            exactMatch.expiresAt = Date.now() + DECAY_MS;
+            return;
+        }
+
+        // Entity overlap: only rehearse if same source type — this is the key fix.
+        // Previously, a research 'answer' with overlapping entities would hit the
+        // dedup check against an old 'input' slot and never enter as a new item.
+        // Now different source types always get their own slot, preserving the
+        // distinction between user assertions, retrieved facts, and self-speech.
+        const sameSourceMatch = this.slots.find(s =>
+            s.type === type &&
+            entities.length > 0 &&
+            s.entities.some(e => entities.includes(e))
         );
-        if (existing) {
-            existing.strength  = Math.min(1, existing.strength + 0.2);
-            existing.expiresAt = Date.now() + DECAY_MS;
+        if (sameSourceMatch) {
+            sameSourceMatch.strength  = Math.min(1, sameSourceMatch.strength + 0.15);
+            sameSourceMatch.expiresAt = Date.now() + DECAY_MS;
             return;
         }
 
         const item = {
             content,
             entities: this._normalizeEntities(entities),
-            type,     // 'input' | 'thought' | 'goal' | 'fact'
+            type,
             strength,
             expiresAt: Date.now() + DECAY_MS,
         };
 
         this.slots.push(item);
 
-        // Over capacity — drop the weakest item
+        // Over capacity — evict lowest-priority source type first, then weakest
         if (this.slots.length > CAPACITY) {
-            this.slots.sort((a, b) => b.strength - a.strength);
-            this.slots = this.slots.slice(0, CAPACITY);
+            this.slots.sort((a, b) => {
+                const pa = SOURCE_PRIORITY[a.type] ?? 1;
+                const pb = SOURCE_PRIORITY[b.type] ?? 1;
+                if (pa !== pb) return pa - pb;  // lower priority evicted first
+                return a.strength - b.strength; // then weakest
+            });
+            this.slots = this.slots.slice(this.slots.length - CAPACITY);
         }
     }
 

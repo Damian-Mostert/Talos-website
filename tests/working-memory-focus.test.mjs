@@ -176,4 +176,5 @@ test('awaitResearchForTopic returns fresh grounding facts when research complete
 
   const result = await consciousness._awaitResearchForTopic('space', ['space'], null, 100);
   assert.deepEqual(result, { facts: 'space is vast and mostly empty' });
+  consciousness.stop();
 });

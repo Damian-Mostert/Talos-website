@@ -1,4 +1,4 @@
-// llm.js — grounded language cortex
+// llm.js — compatibility wrapper for the language module
 //
 // No LLM. No templates. No pretrained grammar.
 //
@@ -12,175 +12,26 @@
 // The more it hears, the richer its speech becomes.
 // Patterns that produce positive outcomes (dopamine) get reinforced in memory.js.
 
-// ── understand ────────────────────────────────────────────────────────────────
-// Parse human input into structured intent. No LLM.
+export * from './language.js';
+export { understand, respond, think, speak, auditThinking } from './language.js';
 
-const SKIP_WORDS = new Set([
-    'what','who','where','when','why','how','is','are','am','was','were','be','been','being',
-    'that','this','with','from','just','like','about','have','your','they','them','their',
-    'here','there','will','would','could','should','does','dont','cant','wont','hello','name',
-    'the','a','an',
-    'very','much','more','some','such','into','onto','over','under','after','before','also',
-    'then','than','these','those','which','while','have','has','had','do','does','can',
-]);
-
-const TOPIC_OVERRIDES = new Set(['fear','danger','pain','hurt']);
-const EMOTION_KEYWORDS = new Set(['fear','danger','pain','hurt','scared','afraid','unsafe','threat']);
-
-function _selectEntities(text, context = {}) {
-    const words = text.toLowerCase().replace(/[^a-z\s]/g, ' ').split(/\s+/).filter(Boolean);
-    const contentWords = words.filter(w => w.length > 1 && !SKIP_WORDS.has(w));
-
-    const contextTerms = (context.recentTopics || context.knowledge || [])
-        .filter(Boolean)
-        .map(term => String(term).toLowerCase())
-        .filter(Boolean);
-
-    if (contentWords.length === 0 && contextTerms.length > 0) {
-        return contextTerms.slice(0, 5);
-    }
-
-    const contextAligned = contentWords.filter(w => contextTerms.some(term => term.includes(w) || w.includes(term)));
-    const fallback = contextAligned.length > 0 ? contextAligned : contentWords;
-
-    if (fallback.length === 0 && contextTerms.length > 0) {
-        return contextTerms.slice(0, 5);
-    }
-
-    if (fallback.length === 1 && fallback[0] === 'it' && contextTerms.length > 0) {
-        return contextTerms.slice(0, 5);
-    }
-
-    return [...new Set(fallback)].slice(0, 5);
-}
-
-export function understand(humanText, context = {}) {
-    const lower = humanText.toLowerCase();
-
-    let intent = 'statement';
-    if (/^(hi|hey|hello|yo)\b/i.test(humanText) && humanText.length < 15) intent = 'greeting';
-    else if (/how do you feel\b/i.test(lower) && /\babout\b/i.test(lower)) intent = 'question';
-    else if (/how are you|how do you feel|you okay/i.test(lower))          intent = 'wellbeing';
-    else if (/\byou\b.{0,30}\b(feel|think|know|believe|conscious|alive)/i.test(lower)) intent = 'introspect';
-    else if (/\?/.test(humanText) || /^(what|who|where|when|why|how|is|are|do|does|can)\b/i.test(lower) || /\babout\b/i.test(lower)) intent = 'question';
-    else if (/^(bye|goodbye|see you|later)\b/i.test(lower))                intent = 'farewell';
-    else if (/\b(upset|sad|hurt|angry|frustrated|worried|anxious|lonely)\b/i.test(lower)) intent = 'emotion';
-    else if (/\b(good|great|happy|love|wonderful|amazing|thanks|thank)\b/i.test(lower)) intent = 'affirm';
-    else if (/\b(wrong|no|incorrect|not right|that's not)\b/i.test(lower)) intent = 'correct';
-    else if (/\b(is|are|means|called|named|defined)\b/i.test(lower))       intent = 'teaching';
-
-    const nameMatch = humanText.match(/(?:my name is|call me)\s+([A-Za-z][a-zA-Z]*)/i)
-        || humanText.match(/(?:i(?:'m| am) called)\s+([A-Za-z][a-zA-Z]*)/i);
-    if (nameMatch) intent = 'human_name';
-
-    const brainNameMatch = humanText.match(/(?:you(?:'re| are)|your name is|call (?:yourself|you))\s+([A-Za-z][a-zA-Z]*)/i);
-    if (brainNameMatch) intent = 'brain_name';
-
-    let entities = nameMatch
-        ? [nameMatch[1].toLowerCase()]
-        : brainNameMatch
-            ? [brainNameMatch[1].toLowerCase()]
-            : _selectEntities(lower, context);
-
-    const specialTopicMatch = lower.match(/\b(fear|danger|pain|hurt)\b/);
-    const specialTopic = specialTopicMatch ? specialTopicMatch[1] : null;
-    const aboutMatch = lower.match(/\babout\b\s+([a-z]+(?:\s+[a-z]+)*)/i);
-    const aboutTopic = aboutMatch
-        ? aboutMatch[1]
-            .toLowerCase()
-            .split(/\s+/)
-            .map(w => w.trim())
-            .filter(Boolean)
-            .find(w => w.length > 1 && !SKIP_WORDS.has(w)) || null
-        : null;
-    const questionTopicMatch = lower.match(/\bwhat is (?:the )?([a-z][a-z\s]+?)(?:\?|$)/i)
-        || lower.match(/\bwhat does ([a-z][a-z\s]+?) mean(?:\?|$)/i)
-        || lower.match(/\bwho is ([a-z][a-z\s]+?)(?:\?|$)/i)
-        || lower.match(/\bwhere is ([a-z][a-z\s]+?)(?:\?|$)/i);
-    const explicitQuestionTopic = questionTopicMatch
-        ? questionTopicMatch[1].toLowerCase().split(/\s+/).filter(w => w.length > 1 && !SKIP_WORDS.has(w)).join(' ')
-        : null;
-    const mentionsEmotion = /\b(fear|danger|pain|hurt|scared|afraid|unsafe|threat)\b/.test(lower);
-    const isCreatorMention = /\byour creator\b|\bmy creator\b/.test(lower);
-
-    if (mentionsEmotion && intent === 'statement') {
-        intent = 'emotion';
-    }
-
-    if (isCreatorMention) {
-        entities = entities.filter(e => e !== 'creator');
-    }
-
-    const topic = nameMatch
-        ? nameMatch[1].toLowerCase()
-        : brainNameMatch
-            ? brainNameMatch[1].toLowerCase()
-            : aboutTopic || explicitQuestionTopic || specialTopic || entities[0] || null;
-
-    if (explicitQuestionTopic) {
-        const explicitEntities = explicitQuestionTopic.split(/\s+/).filter(w => w.length > 1 && !SKIP_WORDS.has(w));
-        entities = [...new Set([...explicitEntities, ...entities])];
-    }
-
-    if (topic && topic !== entities[0] && !entities.includes(topic)) {
-        entities.unshift(topic);
-    }
-
-    const negWords = ['hurt','pain','sad','angry','scared','afraid','alone','lost','wrong','bad','hate','fear'];
-    const posWords = ['good','happy','love','safe','warm','friend','play','learn','know','trust','joy'];
-    const hasNeg = negWords.some(w => lower.includes(w));
-    const hasPos = posWords.some(w => lower.includes(w));
-    const emotion = hasNeg ? 'upset' : hasPos ? 'happy' : 'neutral';
-
-    return {
-        intent,
-        topic,
-        entities,
-        sentiment:   hasNeg ? 'negative' : hasPos ? 'positive' : 'neutral',
-        emotion,
-        summary:     humanText,
-        needsSearch: false,
-        searchQuery: null,
-    };
-}
-
-// ── Speech generation core ────────────────────────────────────────────────────
-//
-// _recallUtterances: pull speech pattern memories relevant to current context
-// _mutate:           swap content words toward active concepts
-// _primitive:        last-resort minimal output when memory is empty
-
-// Track recently produced outputs and recently-used content words to avoid repetition
-const _recentOutputs = [];
-const _recentWords   = [];
-const RECENT_CAP     = 12;
-const RECENT_WORD_CAP = 30;
-
-// Jaccard similarity between two token sets — used for detecting
-// near-duplicate utterances (mutations of the same template).
-function _tokenSet(text) {
-    return new Set((text || '').toLowerCase().replace(/[^a-z\s]/g, ' ').split(/\s+/).filter(Boolean));
-}
-function _jaccard(a, b) {
-    if (a.size === 0 && b.size === 0) return 1;
-    let intersection = 0;
-    for (const tok of a) if (b.has(tok)) intersection++;
-    const union = a.size + b.size - intersection;
-    return union === 0 ? 1 : intersection / union;
-}
-
-// Score an utterance by how many of its words overlap with the target entities.
-// Higher overlap = more contextually relevant to the current topic.
-function _relevanceScore(content, entities) {
-    if (!entities || entities.length === 0) return 0;
-    const words = content.toLowerCase().replace(/[^a-z\s]/g, ' ').split(/\s+/);
-    return entities.reduce((n, e) => n + (words.some(w => w === e || w.startsWith(e) || e.startsWith(w)) ? 1 : 0), 0);
-}
+// Patterns that are high-salience from boot but become attractor loops in
+// conversation — penalise them heavily during recall so they don't dominate.
+// These are also filtered out entirely from conversational replies (respond())
+// since they are aversion reflexes, not language.
+const ATTRACTOR_PATTERNS = [
+    /^danger reminds me of/i,
+    /^pain reminds me of/i,
+    /^(that hurts|i feel pain|stop that|danger here|this feels bad|this is too much|i need to get away from this|i want this to stop|i do not like this)$/i,
+];
 
 function _recallUtterances(cortex, entities, emotion, topN = 12, intentTag = null) {
     if (!cortex) return [];
     let all = cortex.recall(entities, emotion, topN * 2, 'speech')
-        .filter(m => m.type === 'utterance');
+        .filter(m => m.type === 'utterance')
+        // Hard-filter aversion reflexes by both regex and intent tag
+        .filter(m => !ATTRACTOR_PATTERNS.some(p => p.test(m.content)))
+        .filter(m => !m.entities?.includes('aversion'));
 
     // When an intentTag is provided, prefer utterances whose entities include it.
     // This ensures greeting recall returns greeting phrases, not social phrases.
@@ -191,7 +42,10 @@ function _recallUtterances(cortex, entities, emotion, topN = 12, intentTag = nul
 
     // Sort by contextual relevance (entity overlap) descending, break ties randomly.
     return all
-        .map(m => ({ m, score: _relevanceScore(m.content, entities) + Math.random() * 0.4 }))
+        .map(m => ({
+            m,
+            score: _relevanceScore(m.content, entities) + Math.random() * 0.4,
+        }))
         .sort((a, b) => b.score - a.score)
         .slice(0, topN)
         .map(x => x.m);
@@ -360,15 +214,10 @@ function _isQuestionLike(text) {
     return /^(who|what|where|when|why|how|is|are|do|does|did|can|could|would|should|will|shall)\b/.test(lower);
 }
 
-function _dequestionize(text, topic) {
-    if (!text || typeof text !== 'string') return text;
-    let normalized = text.trim().replace(/\?+$/g, '').trim();
-    if (normalized.length === 0) return `I am still thinking about ${topic}.`;
-    if (_isQuestionLike(normalized)) {
-        if (topic) return `I am still thinking about ${topic}.`;
-        return `I am still thinking about this.`;
-    }
-    return normalized;
+function _dequestionize(text) {
+    if (!text || typeof text !== 'string') return null;
+    const normalized = text.trim().replace(/\?+$/g, '').trim();
+    return normalized && !_isQuestionLike(normalized) ? normalized : null;
 }
 
 function _matchesTopic(text, tokens) {
@@ -377,35 +226,24 @@ function _matchesTopic(text, tokens) {
     return tokens.some(token => token && lower.includes(token));
 }
 
-// Minimal primitive output — only used when utterance memory is completely empty.
-// These are not templates; they are the absolute floor of communication.
-function _primitive(intent, name, valence) {
-    const sign = valence > 0.2 ? '+' : valence < -0.2 ? '-' : '~';
-    switch (intent) {
-        case 'greeting':  return name ? `${name}.` : '.';
-        case 'farewell':  return 'okay.';
-        case 'wellbeing': return `${sign}.`;
-        case 'question':  return 'unknown.';
-        default:          return `${sign}.`;
-    }
-}
-
 // ── Intent → utterance matching ─────────────────────────────────────────────
 // Maps parsed intent to seed words that bias recall toward appropriate responses.
 // This is not a template — it's a recall hint. The actual utterance comes from memory.
 // Intent seeds match the slot-category entity tags written by languageBoot.
 // Greeting uses only 'greeting' so it doesn't pull in the social group.
 const INTENT_SEEDS = {
-    greeting:   ['greeting'],
-    farewell:   ['greeting'],
-    wellbeing:  ['wellbeing', 'feel_state', 'be_state'],
-    introspect: ['introspect', 'think_about', 'notice_obj'],
-    question:   ['question', 'ask_topic', 'knowledge'],
-    affirm:     ['social', 'knowledge', 'feel_state'],
-    correct:    ['social', 'knowledge'],
-    emotion:    ['statement', 'emotion_w', 'social'],
-    teaching:   ['knowledge', 'introspect'],
-    statement:  ['statement', 'introspect', 'emotion_w'],
+    greeting:     ['greeting'],
+    farewell:     ['greeting'],
+    wellbeing:    ['response', 'wellbeing', 'feel_state', 'be_state'],
+    introspect:   ['response', 'introspect', 'think_about', 'notice_obj'],
+    question:     ['answer', 'response', 'ask_topic', 'knowledge'],
+    affirm:       ['social', 'response', 'knowledge', 'feel_state'],
+    correct:      ['social', 'response', 'knowledge'],
+    emotion:      ['response', 'statement', 'emotion_w', 'social'],
+    teaching:     ['response', 'knowledge', 'introspect'],
+    statement:    ['response', 'statement', 'introspect', 'emotion_w'],
+    human_speech: ['human_speech', 'response'],
+    response:     ['response', 'social'],
 };
 
 // ── respond ───────────────────────────────────────────────────────────────────
@@ -414,11 +252,19 @@ const INTENT_SEEDS = {
 function _learnedReply(parsed, scState, entities, concepts, emotionContext, extraTexts = []) {
     const { cortex } = scState || {};
     const intentTag = parsed.intent === 'question' ? 'answer' : parsed.intent === 'statement' ? 'statement' : parsed.intent;
+    const intentEntities = INTENT_SEEDS[parsed.intent] || [];
+    const recallEntities = [...new Set([...entities, intentTag, ...intentEntities])];
     const utterances = cortex && typeof cortex.recall === 'function'
-        ? _recallUtterances(cortex, entities, emotionContext, 8, intentTag)
+        ? _recallUtterances(cortex, recallEntities, emotionContext, 8, intentTag)
         : [];
-    if (utterances.length > 0) {
-        const reply = _pickAndMutate(utterances, concepts, entities);
+    // Mutation can replace a single word with the requested topic, making an
+    // unrelated sentence *look* relevant ("fear is danger" → "universe is
+    // danger"). For questions, require topic evidence before any mutation.
+    const groundedUtterances = parsed.intent === 'question'
+        ? utterances.filter(utterance => _matchesTopic(utterance.content, entities))
+        : utterances;
+    if (groundedUtterances.length > 0) {
+        const reply = _pickAndMutate(groundedUtterances, concepts, entities);
         if (reply && !(parsed.intent === 'question' && _isQuestionLike(reply))) return reply;
     }
 
@@ -434,7 +280,6 @@ export function respond(parsed, scState) {
         internalThoughts = [],
         beliefs = [],
     } = scState || {};
-    const human = humanName || 'you';
     const { valence = 0 } = neuralState || {};
     const focusEntities = Array.isArray(focus?.entities) ? focus.entities : [];
     const mutationEntities = [...new Set([...(focusEntities || []), ...(parsed.entities || [])].filter(Boolean))];
@@ -475,27 +320,35 @@ export function respond(parsed, scState) {
     const safeGroundingMemory = groundingMemories.find(m => m && m.content && !_isQuestionLike(m.content) && _matchesTopic(m.content, topicTokens));
     const safeResearchedFacts = researchedFacts && !_isQuestionLike(researchedFacts) && _matchesTopic(researchedFacts, topicTokens) ? researchedFacts : null;
     const bestBelief = Array.isArray(beliefs) ? beliefs[0] : null;
-    const hasLearnedContext = recentMemories.length > 0 && recentMemories[0].salience > 0.3;
 
     const replyEntities = [...new Set([topic, ...(parsed.entities || []), ...mutationEntities].filter(Boolean))];
     const extraTexts = [internalDeliberation, groundingMemories[0]?.content, researchedFacts].filter(Boolean);
     const replyConcepts = _buildConceptPool(rawConcepts, extraTexts, replyEntities);
 
     const learnedReply = _learnedReply(parsed, scState, replyEntities, replyConcepts, emotionContext, extraTexts);
-    if (learnedReply) {
+    // For questions: only use a learned reply if research hasn't produced a direct answer.
+    // Also reject desire/want/miss patterns as answers to questions — they are
+    // emotional reactions, not informational replies.
+    const DESIRE_PATTERN = /^(i want|i need|i miss|i crave|i do not want|i wish|i long for|i prefer)\b/i;
+    const researchHasAnswer = parsed.intent === 'question' && researchedFacts && researchedFacts.length > 10;
+    if (learnedReply && !researchHasAnswer) {
+        const isDesireReply = parsed.intent === 'question' && DESIRE_PATTERN.test(learnedReply.trim());
         const questionReplyValid = parsed.intent !== 'question' || _matchesTopic(learnedReply, topicTokens);
-        if (questionReplyValid) return _result(learnedReply, parsed);
+        if (questionReplyValid && !isDesireReply) return _result(learnedReply, parsed);
     }
 
     if (parsed.intent === 'question') {
+        // Research answered the actual question — use it directly.
+        // This is the primary answer path for questions; utterance recall
+        // is a secondary path for when research hasn't run yet.
+        if (researchedFacts && researchedFacts.length > 10) {
+            const statement = _isQuestionLike(researchedFacts)
+                ? _dequestionize(researchedFacts)
+                : researchedFacts;
+            if (statement) return _result(statement.slice(0, 280), parsed);
+        }
         if (bestBelief?.verified) {
             return _result(bestBelief.claim.slice(0, 220), parsed);
-        }
-        if (bestBelief) {
-            return _result(`I have an unverified ${bestBelief.source} note about ${topic}: ${bestBelief.claim.slice(0, 170)}`, parsed);
-        }
-        if (safeResearchedFacts) {
-            return _result(safeResearchedFacts.slice(0, 220), parsed);
         }
         if (safeGroundingMemory) {
             return _result(safeGroundingMemory.content.slice(0, 220), parsed);
@@ -503,67 +356,49 @@ export function respond(parsed, scState) {
         if (safeInternalDeliberation) {
             return _result(safeInternalDeliberation.slice(0, 220), parsed);
         }
-        if (researchedFacts) {
-            return _result(_dequestionize(researchedFacts, topic).slice(0, 220), parsed);
-        }
         if (groundingMemories[0]?.content) {
-            return _result(_dequestionize(groundingMemories[0].content, topic).slice(0, 220), parsed);
+            const statement = _dequestionize(groundingMemories[0].content);
+            if (statement) return _result(statement.slice(0, 220), parsed);
         }
         if (internalDeliberation) {
-            return _result(_dequestionize(internalDeliberation, topic).slice(0, 220), parsed);
+            const statement = _dequestionize(internalDeliberation);
+            if (statement) return _result(statement.slice(0, 220), parsed);
         }
-        if (topic) {
-            return _result(`I am still learning about ${topic} and I want to understand it better.`, parsed);
-        }
-        return _result(`I am still learning and I want to understand this better.`, parsed);
+        // No research, no memories, no deliberation — acknowledge the question
+        // rather than going silent. Silence is worse than honest uncertainty.
+        if (topic) return _result(`I don't have enough grounding on ${topic} yet.`, parsed);
+        return _result(`I'm not sure — I need more experience with that.`, parsed);
     }
 
-    if (parsed.intent === 'human_name') {
-        const nameStr = replyEntities[0] || human;
-        return _result(`Nice to meet you, ${nameStr}.`, parsed);
+    // Non-question intents: if learned reply failed, try grounding memories
+    // and internal thoughts before going silent.
+    if (safeGroundingMemory) return _result(safeGroundingMemory.content.slice(0, 220), parsed);
+    if (safeInternalDeliberation) return _result(safeInternalDeliberation.slice(0, 220), parsed);
+    if (recentMemories.length > 0) {
+        const mem = recentMemories.find(m => !_isQuestionLike(m.content));
+        if (mem) return _result(mem.content.slice(0, 220), parsed);
     }
 
-    if (parsed.intent === 'brain_name') {
-        const brainNameStr = replyEntities[0] || 'myself';
-        return _result(`You can call me ${brainNameStr}.`, parsed);
-    }
+    // Absolute floor — never go silent.
+    const wm = scState?.workingMemory?.read?.(2) || [];
+    const wmItem = wm.find(s => s.content && !_isQuestionLike(s.content) && s.source !== 'self_speech');
+    if (wmItem) return _result(wmItem.content.slice(0, 180), parsed);
 
-    if (parsed.intent === 'greeting' && humanName) {
-        return _result(`Hello, ${humanName}.`, parsed);
-    }
-
-    if (parsed.intent === 'farewell') {
-        return _result(`See you soon.`, parsed);
-    }
-
-    if (parsed.intent === 'wellbeing') {
-        return _result(hasLearnedContext ? `I am staying with this feeling and learning from it.` : `I am here with this feeling.`, parsed);
-    }
-
-    if (parsed.intent === 'statement' || parsed.intent === 'emotion' || parsed.intent === 'affirm' || parsed.intent === 'correct' || parsed.intent === 'teaching' || parsed.intent === 'introspect') {
-        return _result(hasLearnedContext && topic
-            ? `I am keeping this in mind as I learn more about ${topic}.`
-            : `I am learning from this and I will keep it in mind.`, parsed);
-    }
-
-    return _result(_primitive(parsed.intent, human, valence), parsed);
+    return null;
 }
 
 // ── think ─────────────────────────────────────────────────────────────────────
 export function think(scState) {
     const {
-        myName, neuralState, cortex, memories = [], workingMemory,
+        neuralState, cortex, memories = [], workingMemory,
         activeGoal, conceptActivations: rawConcepts = null,
-        loopBreak = null,
-        beliefs = [],
+        loopBreak = null, deliberation = null, researchedFacts = null,
     } = scState;
 
     if (loopBreak) return loopBreak.text;
 
-    const bestBelief = Array.isArray(beliefs) ? beliefs[0] : null;
-    if (activeGoal && bestBelief) {
-        const status = bestBelief.verified ? 'supported evidence' : `an unverified ${bestBelief.source} note`;
-        return `For ${activeGoal.topic}, I have ${status}: ${bestBelief.claim.slice(0, 140)}`;
+    if (activeGoal && deliberation?.concluded && deliberation.conclusion?.claim) {
+        return deliberation.conclusion.claim.slice(0, 140);
     }
 
     const { valence = 0 } = neuralState || {};
@@ -573,26 +408,47 @@ export function think(scState) {
     const thinkEntities = [...new Set([
         ...(activeGoal ? [activeGoal.topic, ...(activeGoal.entities || [])] : []),
         ...focusEntities,
-        ...concepts.slice(0, 2).map(c => c.label),
+        ...concepts.slice(0, 3).map(c => c.label),
     ].filter(Boolean))];
 
-    // Recall an utterance memory and mutate it toward current thought
+    // ── Concept-net traversal (primary path when research is available) ────
+    // Build a thought by finding which active concepts are grounded in the
+    // research facts, then pulling the best matching semantic memory sentence.
+    // This replaces random utterance mutation with actual content-driven thinking.
+    if (researchedFacts && concepts.length > 0) {
+        const anchor = activeGoal?.topic || thinkEntities[0];
+        if (anchor) {
+            const factWords = researchedFacts.toLowerCase()
+                .replace(/[^a-z\s]/g, ' ').split(/\s+/)
+                .filter(w => w.length > 4);
+            const grounded = concepts
+                .filter(c => factWords.some(w => w.includes(c.label) || c.label.includes(w)))
+                .slice(0, 2);
+            if (grounded.length >= 1) {
+                const recallKeys = [anchor, ...grounded.map(c => c.label)];
+                const anchorMem = cortex?.recall(recallKeys, emotionContext, 4, 'background')
+                    .find(m => m.type === 'semantic' && m.content.length > 20);
+                if (anchorMem) {
+                    const sentence = anchorMem.content.split(/[.!]/)[0].trim();
+                    if (sentence.length > 15) return sentence + '.';
+                }
+                // No matching memory yet — express the raw concept chain
+                return `${anchor}: ${grounded.map(c => c.label).join(', ')}.`;
+            }
+        }
+    }
+
+    // ── Utterance recall fallback ─────────────────────────────────────────
     const utterances = _recallUtterances(cortex, thinkEntities, emotionContext, 12, 'introspect');
     if (utterances.length > 0) {
         const t = _pickAndMutate(utterances, concepts, thinkEntities);
         if (t) return t;
     }
 
-    // Fall back to working memory content
     const wm = workingMemory ? workingMemory.read(2) : [];
     if (wm.length > 0) return wm[0].content.slice(0, 100);
-
-    // Fall back to semantic memory
     if (memories.length > 0) return memories[0].content.slice(0, 100);
-
-    // Absolute floor
-    const top = concepts[0];
-    return top ? `${top.label}.` : '.';
+    return null;
 }
 
 // ── auditThinking ─────────────────────────────────────────────────────────────
@@ -611,6 +467,7 @@ export function speak(scState) {
     const {
         neuralState, myName, humanName, cortex, memories = [],
         activeGoal, conceptActivations: rawConcepts = null,
+        researchedFacts = null,
     } = scState;
 
     const concepts = _parseConcepts(rawConcepts);
@@ -623,31 +480,47 @@ export function speak(scState) {
         ...concepts.slice(0, 2).map(c => c.label),
     ].filter(Boolean))];
 
-    const utterances = _recallUtterances(cortex, entities, emotionContext, 12, 'statement');
+    // ── Concept-net traversal (mirrors think()) ───────────────────────────
+    if (researchedFacts && concepts.length > 0) {
+        const anchor = activeGoal?.topic || entities[0];
+        if (anchor) {
+            const factWords = researchedFacts.toLowerCase()
+                .replace(/[^a-z\s]/g, ' ').split(/\s+/)
+                .filter(w => w.length > 4);
+            const grounded = concepts
+                .filter(c => factWords.some(w => w.includes(c.label) || c.label.includes(w)))
+                .slice(0, 2);
+            if (grounded.length >= 1) {
+                const anchorMem = cortex?.recall([anchor, ...grounded.map(c => c.label)], emotionContext, 4, 'background')
+                    .find(m => m.type === 'semantic' && m.content.length > 20
+                        && !ATTRACTOR_PATTERNS.some(p => p.test(m.content)));
+                if (anchorMem) {
+                    const sentence = anchorMem.content.split(/[.!]/)[0].trim();
+                    if (sentence.length > 15) return sentence + '.';
+                }
+            }
+        }
+    }
+
+    // ── Utterance recall — hard-exclude aversion intent ─────────────────────
+    const utterances = _recallUtterances(cortex, entities, emotionContext, 12, 'statement')
+        .filter(u => !u.entities?.includes('aversion'));
     if (utterances.length > 0) {
         const s = _pickAndMutate(utterances, concepts, entities);
         if (s) return s;
     }
 
     if (memories.length > 0) return memories[0].content.slice(0, 80);
-
-    // A strong emotion or concept is not, by itself, a reason to interrupt a
-    // person. Returning null lets the caller remain silent instead of emitting
-    // low-information lines such as "danger +".
     return null;
 }
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
 function _result(reply, parsed) {
-    let moveIntent = null;
-    const lower = (parsed.summary || '').toLowerCase();
-    if      (/\b(move|go|walk|come)\b.{0,20}\b(up|north)\b/i.test(lower))    moveIntent = { dx:  0, dy: -1 };
-    else if (/\b(move|go|walk|come)\b.{0,20}\b(down|south)\b/i.test(lower))  moveIntent = { dx:  0, dy:  1 };
-    else if (/\b(move|go|walk|come)\b.{0,20}\b(left|west)\b/i.test(lower))   moveIntent = { dx: -1, dy:  0 };
-    else if (/\b(move|go|walk|come)\b.{0,20}\b(right|east)\b/i.test(lower))  moveIntent = { dx:  1, dy:  0 };
-    else if (/\b(move|go|walk|explore)\b/i.test(lower))                       moveIntent = { dx: Math.random() > 0.5 ? 0.7 : -0.7, dy: Math.random() > 0.5 ? 0.7 : -0.7 };
-    return { reply: (reply || '.').trim(), stateIntent: null, stateReason: null, calcCode: null, moveIntent };
+    // Movement intent is derived from the 'command' intent classification,
+    // not from regex matching on the raw text. The brain learned move/go/walk
+    // patterns during boot — if intent === 'command' the caller handles movement.
+    return { reply: (reply || '.').trim(), stateIntent: null, stateReason: null, calcCode: null, moveIntent: null };
 }
 
 // Parse "food:0.61 (v+0.71 a0.5) [present,edible]" back into objects

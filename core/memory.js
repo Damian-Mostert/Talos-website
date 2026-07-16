@@ -13,7 +13,11 @@
 const DECAY_RATE        = 0.0002;
 const CONSOLIDATE_BOOST = 0.15;
 const PRUNE_THRESHOLD   = 0.05;
-const MAX_MEMORIES      = 2500;
+// Language boot is a real training corpus, not disposable warm-up. The old
+// 2,500-entry cap discarded most of its 20k+ learned patterns before Talos
+// could ever retrieve them. This remains bounded, but leaves enough room for
+// language, episodic experience, and semantic learning to coexist.
+const MAX_MEMORIES      = Number(process.env.NEXT_PUBLIC_BRAIN_MEMORY_CAPACITY ?? 12000);
 
 // Episodic memories decay faster — they're time-bound events, not general knowledge
 const EPISODIC_DECAY_MULT   = 1.8;

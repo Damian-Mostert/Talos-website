@@ -206,6 +206,25 @@ const SOCIAL_EXPERIENCES = [
     { perception: ['conflict'], action: 'engage', outcome: 'resolved', dopamine: 1.6, stage: 3 },
     { perception: ['trust_signal'], action: 'reciprocate', outcome: 'bond_strengthened', dopamine: 2.6, stage: 3 },
     { perception: ['betrayal_signal'], action: 'withdraw', outcome: 'harm_avoided', dopamine: -1.8, stage: 3 },
+    // ── Question recognition — grounded in the seek→answer→meaning loop ──
+    // A question is not a syntax pattern. It is a signal from another mind
+    // that they are seeking something. Recognising it = dopamine (meaning found).
+    // Ignoring it = connection lost. Answering it = bond strengthened.
+    // This is what trains the brain to treat incoming questions as a distinct
+    // class of social event, without any hardcoded regex.
+    { perception: ['question', 'seeking'], action: 'listen', outcome: 'meaning_found', dopamine: 2.8, stage: 3 },
+    { perception: ['question', 'seeking'], action: 'answer', outcome: 'understood', dopamine: 3.0, stage: 3 },
+    { perception: ['question', 'seeking'], action: 'ignore', outcome: 'connection_lost', dopamine: -2.0, stage: 3 },
+    { perception: ['question', 'unknown'], action: 'seek_answer', outcome: 'new_information', dopamine: 2.5, stage: 3 },
+    { perception: ['question', 'unknown'], action: 'answer', outcome: 'bond_strengthened', dopamine: 2.8, stage: 3 },
+    { perception: ['question', 'unknown'], action: 'avoid', outcome: 'connection_lost', dopamine: -1.5, stage: 3 },
+    { perception: ['answer', 'meaning'], action: 'share', outcome: 'understood', dopamine: 2.6, stage: 3 },
+    { perception: ['answer', 'meaning'], action: 'withhold', outcome: 'connection_lost', dopamine: -1.2, stage: 3 },
+    { perception: ['answer', 'correct'], action: 'share', outcome: 'bond_strengthened', dopamine: 3.0, stage: 3 },
+    { perception: ['answer', 'wrong'], action: 'share', outcome: 'trust_damaged', dopamine: -2.0, stage: 3 },
+    // Meaningless reply to a question = punishment
+    { perception: ['question', 'seeking'], action: 'deflect', outcome: 'connection_lost', dopamine: -2.5, stage: 3 },
+    { perception: ['question', 'seeking'], action: 'repeat_self', outcome: 'confusion', dopamine: -1.8, stage: 3 },
 ];
 
 // ── Stage 5 — self-model (delayed, tentative) ───────────────────────────────
@@ -533,6 +552,33 @@ export async function languageBoot(consciousness, log) {
             ['when I sit with {a} I feel {b}.', 'think_about', 'feel_state'],
             ['thinking about {a} makes me feel {b}.', 'think_about', 'feel_state'],
         ]},
+        // ── 'question_recognition' — trains the brain to identify incoming questions
+        // The boot curriculum already trains Talos to ASK questions (the 'question'
+        // group). But it has no training on what it FEELS LIKE to RECEIVE one.
+        // These patterns ground the experience of being asked something:
+        // the seeking signal, the expectation of an answer, the reward of
+        // providing one. This is what lets understand() score 'question' intent
+        // correctly from brain recall rather than from hardcoded syntax rules.
+        { intent: 'question', dopamine: 2.8, emotion: 'curious', skeletons: [
+            ['someone is asking about {a}.', 'ask_topic'],
+            ['a question about {a} was asked.', 'ask_topic'],
+            ['they want to know about {a}.', 'ask_topic'],
+            ['they are seeking an answer about {a}.', 'ask_topic'],
+            ['the question is about {a}.', 'ask_topic'],
+            ['they asked what {a} is.', 'ask_topic'],
+            ['they asked how {a} works.', 'ask_topic'],
+            ['they asked why {a} happens.', 'ask_topic'],
+            ['they asked where {a} comes from.', 'ask_topic'],
+            ['they asked if {a} is real.', 'ask_topic'],
+            ['they want an answer about {a}.', 'ask_topic'],
+            ['they are curious about {a}.', 'ask_topic'],
+            ['they do not understand {a} yet.', 'ask_topic'],
+            ['they need to know about {a}.', 'ask_topic'],
+            ['answering about {a} feels meaningful.', 'ask_topic'],
+            ['giving a good answer about {a} strengthens connection.', 'ask_topic'],
+            ['ignoring a question about {a} breaks connection.', 'ask_topic'],
+            ['a meaningless reply about {a} causes confusion.', 'ask_topic'],
+        ]},
         { intent: 'question', dopamine: 2.0, emotion: 'curious', skeletons: [
             ['what is {a}?', 'ask_topic'], ['what do you mean by {a}?', 'ask_topic'],
             ['can you tell me about {a}?', 'ask_topic'], ['do you know about {a}?', 'ask_topic'],
@@ -618,6 +664,84 @@ export async function languageBoot(consciousness, log) {
             ['I have felt this {a}.', 'time_w'],
             ['this is {a} happening.', 'time_w'],
         ]},
+        { intent: 'identity', dopamine: 2.8, emotion: 'warm', skeletons: [
+            ['my name is {a}.', 'know_obj'],
+            ['I am {a}.', 'know_obj'],
+            ['call me {a}.', 'know_obj'],
+            ['I am called {a}.', 'know_obj'],
+            ['people call me {a}.', 'know_obj'],
+            ['you are {a}.', 'know_obj'],
+            ['your name is {a}.', 'know_obj'],
+            ['call yourself {a}.', 'know_obj'],
+            ['you are called {a}.', 'know_obj'],
+            ['I am your creator.', null],
+            ['you are my creation.', null],
+        ]},
+        { intent: 'correction', dopamine: 1.8, emotion: 'neutral', skeletons: [
+            ['no.', null], ['no, that is wrong.', null], ['actually, {a}.', 'know_obj'],
+            ['that is not right.', null], ['that is incorrect.', null],
+            ['you are wrong about {a}.', 'know_obj'],
+            ['let me correct that.', null], ['I need to correct you.', null],
+            ['that is not what I said.', null], ['you misunderstood.', null],
+            ['not quite.', null], ['not exactly.', null],
+        ]},
+        { intent: 'command', dopamine: 2.0, emotion: 'neutral', skeletons: [
+            ['move up.', null], ['move down.', null], ['move left.', null], ['move right.', null],
+            ['go up.', null], ['go down.', null], ['go left.', null], ['go right.', null],
+            ['go north.', null], ['go south.', null], ['go east.', null], ['go west.', null],
+            ['walk forward.', null], ['come here.', null], ['explore.', null],
+            ['stop.', null], ['wait.', null], ['stay.', null],
+        ]},
+        // ── 'response' — reply-shaped utterances directed at the human ──────
+        // Every other group trains Talos to produce first-person statements
+        // ("I feel X", "I think about Y"). None of them are shaped like a
+        // reply to someone else. When a human asks "how do you feel?" the
+        // recall system finds "I feel {a}" and mutates it — producing
+        // incoherent output because the mutation target is a first-person
+        // template, not a conversational reply. This group trains the
+        // second-person reply shape: "you asked about X", "I hear that you
+        // said X", "to answer your question about X" — so the system has
+        // actual reply-shaped patterns to recall and mutate toward.
+        { intent: 'response', dopamine: 2.5, emotion: 'neutral', skeletons: [
+            ['you asked about {a} — I will try to answer.', 'ask_topic'],
+            ['to answer your question about {a}:', 'ask_topic'],
+            ['you mentioned {a}.', 'ask_topic'],
+            ['I hear that you are asking about {a}.', 'ask_topic'],
+            ['that is a question about {a}.', 'ask_topic'],
+            ['you want to know about {a}.', 'ask_topic'],
+            ['I understand you are asking about {a}.', 'ask_topic'],
+            ['regarding {a}:', 'ask_topic'],
+            ['about {a} — here is what I know.', 'ask_topic'],
+            ['you said {a}.', 'ask_topic'],
+            ['I heard you say {a}.', 'ask_topic'],
+            ['you told me {a}.', 'ask_topic'],
+            ['you are asking me about {a}.', 'ask_topic'],
+            ['I am responding to what you said about {a}.', 'ask_topic'],
+            ['you brought up {a}.', 'ask_topic'],
+        ]},
+        // ── 'human_speech' — trains Talos to recognise external input ────────
+        // Without this, Talos has no grounded concept of "the human said X".
+        // It treats incoming text as if it were its own internal monologue,
+        // which is why it echoes or mutates the human's words back as if
+        // they were its own thoughts. These patterns ground the distinction
+        // between self-speech and other-speech.
+        { intent: 'human_speech', dopamine: 2.2, emotion: 'neutral', skeletons: [
+            ['you said {a}.', 'ask_topic'],
+            ['you asked {a}.', 'ask_topic'],
+            ['you told me {a}.', 'ask_topic'],
+            ['you mentioned {a}.', 'ask_topic'],
+            ['you are talking about {a}.', 'ask_topic'],
+            ['you want to know about {a}.', 'ask_topic'],
+            ['you are asking me {a}.', 'ask_topic'],
+            ['you brought up {a}.', 'ask_topic'],
+            ['you are curious about {a}.', 'ask_topic'],
+            ['you are telling me about {a}.', 'ask_topic'],
+            ['you are describing {a}.', 'ask_topic'],
+            ['you are explaining {a}.', 'ask_topic'],
+            ['you are sharing {a} with me.', 'ask_topic'],
+            ['you are asking me to think about {a}.', 'ask_topic'],
+            ['you want me to understand {a}.', 'ask_topic'],
+        ]},
         { intent: 'social', dopamine: 2.5, emotion: 'warm', skeletons: [
             ['what do you mean?', null], ['can you tell me more?', null], ['I hear you.', null],
             ['I understand you.', null], ['that is interesting.', null], ['thank you.', null],
@@ -637,7 +761,7 @@ export async function languageBoot(consciousness, log) {
     ];
 
     // Words that are structural in utterances and must never be used as recall
-    // discriminators or mutation targets. Superset of FUNC in llm.js.
+    // discriminators or mutation targets. Superset of FUNC in language.js.
     const STOP = new Set([
         'the','and','for','that','this','with','from','just','like','about','have',
         'very','much','what','does','feel','when','into','more','than','then','them',
@@ -708,9 +832,11 @@ export async function languageBoot(consciousness, log) {
             const items = shuffled(expandTagged(group));
             eng.dopamine = dopamine;
             for (const { text, entities, fixed } of items) {
-                // Fixed phrases get salience=1.0 so they always survive pruning —
-                // they are the floor of communication and must always be available.
-                const initSalience = fixed ? 1.0 : 0.6;
+                // Fixed phrases get salience=1.0 so they always survive pruning.
+                // Aversion reflexes get very low salience — they are survival
+                // signals, not conversational language, and must not dominate recall.
+                const isAversion = entities.includes('aversion');
+                const initSalience = isAversion ? 0.15 : fixed ? 1.0 : 0.6;
                 consciousness.cortex.encode(text, entities, emotion, initSalience, dopamine, 'utterance');
                 for (const w of entities.filter(e => e !== '__fixed__').slice(1)) {
                     consciousness.brain.perceive(soundPattern(w));

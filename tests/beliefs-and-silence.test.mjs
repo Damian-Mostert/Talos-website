@@ -11,18 +11,25 @@ test('beliefs preserve provenance and rank verified claims first', () => {
   assert.equal(beliefs.best('talos').claim, 'Talos runs in the browser.');
 });
 
-test('responses mark unverified generated research as uncertain', () => {
+test('a conclusion requires verified evidence or independent agreement', () => {
+  const beliefs = new BeliefStore();
+  beliefs.record({ topic: 'orbit', claim: 'An orbit is a repeating path around a body.', source: 'generated research', confidence: 0.35 });
+  assert.equal(beliefs.deliberate('orbit').concluded, false);
+  beliefs.record({ topic: 'orbit', claim: 'An orbit is a repeating path around a body.', source: 'human observation', confidence: 0.7 });
+  assert.equal(beliefs.deliberate('orbit').concluded, true);
+});
+
+test('unverified beliefs are available for reflection but not stated as facts', () => {
   const reply = respond(
     { intent: 'question', topic: 'chapies', entities: ['chapies'], emotion: 'neutral', summary: 'what is chapies?' },
     { beliefs: [{ topic: 'chapies', claim: 'A generated definition.', source: 'generated research', confidence: 0.35, verified: false }] },
   );
-  assert.match(reply.reply, /unverified generated research note/i);
+  assert.doesNotMatch(reply.reply, /generated definition/i);
 });
 
-test('thinking can use a belief as explicit evidence', () => {
-  const thought = think({ activeGoal: { topic: 'talos' }, beliefs: [{ claim: 'Talos is a prototype.', source: 'human', verified: false }], neuralState: {} });
-  assert.match(thought, /unverified human note/i);
-  assert.match(thought, /Talos is a prototype/i);
+test('thinking only voices a deliberation once it reaches a conclusion', () => {
+  const thought = think({ activeGoal: { topic: 'talos' }, deliberation: { concluded: true, conclusion: { claim: 'Talos is a prototype.' } }, neuralState: {} });
+  assert.equal(thought, 'Talos is a prototype.');
 });
 
 test('spontaneous speech stays silent without a recalled utterance', () => {

@@ -11,6 +11,19 @@ function normaliseTopic(topic) {
     return String(topic || '').toLowerCase().trim().replace(/\s+/g, ' ');
 }
 
+function tokens(text) {
+    return new Set(String(text || '').toLowerCase().match(/[a-z]{3,}/g) || []);
+}
+
+function similarity(a, b) {
+    const left = tokens(a);
+    const right = tokens(b);
+    if (left.size === 0 || right.size === 0) return 0;
+    let shared = 0;
+    for (const token of left) if (right.has(token)) shared++;
+    return shared / (left.size + right.size - shared);
+}
+
 export class BeliefStore {
     constructor() {
         this.items = [];
@@ -22,7 +35,9 @@ export class BeliefStore {
         const text = String(claim || '').trim();
         if (!key || text.length < 3) return null;
 
-        const existing = this.items.find(item => item.topic === key && item.claim === text);
+        // Keep provenance distinct: two independent sources agreeing with the
+        // same claim are evidence, not a duplicate to overwrite.
+        const existing = this.items.find(item => item.topic === key && item.claim === text && item.source === source);
         if (existing) {
             existing.confidence = Math.max(existing.confidence, confidence);
             existing.verified ||= verified;
@@ -55,5 +70,42 @@ export class BeliefStore {
 
     best(topic) {
         return this.recall(topic, 1)[0] || null;
+    }
+
+    // A deliberation is deliberately structured data, not generated prose.
+    // Claims cluster only when their content agrees; a conclusion needs either
+    // verified evidence or agreement from independent sources.
+    deliberate(topic) {
+        const evidence = this.recall(topic, 8);
+        const clusters = [];
+        for (const item of evidence) {
+            let cluster = clusters.find(group => similarity(group.claim, item.claim) >= 0.55);
+            if (!cluster) {
+                cluster = { claim: item.claim, items: [], sources: new Set(), verified: false, confidence: 0 };
+                clusters.push(cluster);
+            }
+            cluster.items.push(item);
+            cluster.sources.add(item.source);
+            cluster.verified ||= item.verified;
+            cluster.confidence += item.confidence;
+        }
+
+        for (const cluster of clusters) cluster.confidence /= cluster.items.length;
+        clusters.sort((a, b) => (b.verified - a.verified) || (b.sources.size - a.sources.size) || (b.confidence - a.confidence));
+        const leading = clusters[0] || null;
+        const concluded = !!leading && (leading.verified || (leading.sources.size >= 2 && leading.confidence >= 0.45));
+
+        return {
+            topic: normaliseTopic(topic),
+            evidenceCount: evidence.length,
+            alternatives: clusters.map(group => ({
+                claim: group.claim,
+                sources: [...group.sources],
+                confidence: group.confidence,
+                verified: group.verified,
+            })),
+            concluded,
+            conclusion: concluded ? { claim: leading.claim, verified: leading.verified, sources: [...leading.sources] } : null,
+        };
     }
 }

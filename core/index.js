@@ -4,7 +4,7 @@ import { Consciousness } from './consciousness.js';
 import { getWebUI }      from './web-server';
 import { saveSnapshot, loadSnapshot, saveState, loadState } from './snapshot.js';
 
-export default function bootBrain(){
+export default async function bootBrain(){
     const brain = new Brain();
     brain.start(Number(process.env.NEXT_PUBLIC_BRAIN_SPEED ?? 10));
 
@@ -17,18 +17,17 @@ export default function bootBrain(){
 
     ui.start(3000);
 
+    function saveAndStop() {
+        if (!consciousness) return;
+        consciousness.stop();
+        void saveSnapshot(brain.engine);
+        void saveState(consciousness);
+        brain.stop();
+    }
+
     function launch() {
         consciousness = new Consciousness(brain, ui);
         ui.attachBrain(brain);
-
-        process.on('SIGINT', async () => {
-            ui.log('Shutting down...');
-            consciousness.stop();
-            saveSnapshot(brain.engine);
-            saveState(consciousness);
-            brain.stop();
-            process.exit(0);
-        });
 
         // Delay ready so the WS client has time to connect before we send the first message
         setTimeout(() => {
@@ -38,32 +37,24 @@ export default function bootBrain(){
     }
 
     ui.log('Neural tissue allocated.');
-    if (loadSnapshot(brain.engine)) {
+    if (await loadSnapshot(brain.engine)) {
         ui.log('Snapshot loaded.');
-        warmup(brain).then(() => {
+        await warmup(brain);
             consciousness = new Consciousness(brain, ui);
             ui.attachBrain(brain);
-            const stateLoaded = loadState(consciousness);
+            const stateLoaded = await loadState(consciousness);
             ui.log(stateLoaded ? 'State restored.' : 'No state file, starting fresh.');
-
-            process.on('SIGINT', async () => {
-                ui.log('Shutting down...');
-                consciousness.stop();
-                saveSnapshot(brain.engine);
-                saveState(consciousness);
-                brain.stop();
-                process.exit(0);
-            });
-
             setTimeout(() => {
                 ui.ready();
                 consciousness.start();
             }, 500);
-        });
     } else {
-        boot(brain, (msg) => ui.log(msg), (ep, total) => ui.bootProgress(ep, total)).then(() => {
-            saveSnapshot(brain.engine);
-            launch();
-        });
+        await boot(brain, (msg) => ui.log(msg), (ep, total) => ui.bootProgress(ep, total));
+        await saveSnapshot(brain.engine);
+        launch();
     }
+
+    // This module runs in the browser (it is imported by a Client Component),
+    // so persist on page lifecycle events rather than registering Node's SIGINT.
+    globalThis.addEventListener?.('pagehide', saveAndStop, { once: true });
 }
