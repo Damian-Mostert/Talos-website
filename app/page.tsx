@@ -1,21 +1,24 @@
 'use client';
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import TalosWorldPage from './components/world';
 import { connectPseudoSocket, PseudoSocket } from '@core/web-server';
 import bootBrain from "../core/index";
+import ScaryMemoryComponent from './components/warn';
 
 export default function TalosChatPage() {
   const toggleThemeRef = useRef<() => void>(() => {});
   const sendRef = useRef<() => void>(() => {});
-
+  const [loading,setLoading] = useState(true);
   useEffect(() => {
     let cancelled = false;
     const run = async () => {
       try {
         await bootBrain();
+        setLoading(false);
       } catch (err) {
         if (!cancelled) console.error('bootBrain failed', err);
+        setLoading(false);
       }
     };
     run();
@@ -1137,7 +1140,25 @@ export default function TalosChatPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  useEffect(() => {
+    const handleBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+
+      // Required for Chrome
+      event.returnValue = '';
+
+      return '';
+    };
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+    };
+  }, []);  
+
   return (
+    <>
     <div className='flex flex-row overflow-y-auto overflow-x-none w-screen h-screen'>
       <div className='min-w-screen min-h-screen lg:min-w-1 lg:w-full flex flex-row-reverse overflow-y-auto lg:overflow-y-visible'>
           <div id="chat-col" className='min-w-screen min-h-screen lg:min-w-1 lg:w-full h-full' >
@@ -1340,5 +1361,7 @@ export default function TalosChatPage() {
         </div>
       </div>
     </div>
+    {loading && <ScaryMemoryComponent/>}
+    </>
   );
 }

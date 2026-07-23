@@ -25,15 +25,17 @@ export default async function bootBrain(){
         brain.stop();
     }
 
-    function launch() {
+    async function launch() {
         consciousness = new Consciousness(brain, ui);
         ui.attachBrain(brain);
+        return await new Promise((resolve) => {
 
-        // Delay ready so the WS client has time to connect before we send the first message
-        setTimeout(() => {
-            ui.ready();
-            consciousness.start();
-        }, 500);
+            // Delay ready so the WS client has time to connect before we send the first message
+            setTimeout(async () => {
+                ui.ready();
+                consciousness.start(resolve);
+            }, 500);
+        })
     }
 
     ui.log('Neural tissue allocated.');
@@ -50,8 +52,8 @@ export default async function bootBrain(){
             }, 500);
     } else {
         await boot(brain, (msg) => ui.log(msg), (ep, total) => ui.bootProgress(ep, total));
-        await saveSnapshot(brain.engine);
-        launch();
+        //await saveSnapshot(brain.engine);
+        await launch();
     }
 
     // This module runs in the browser (it is imported by a Client Component),

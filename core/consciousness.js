@@ -1869,10 +1869,11 @@ export class Consciousness {
 
     // ── Main loop ─────────────────────────────────────────────────────────────
 
-    async start() {
+    async start(onLangDone) {
         this.running = true;
         this.ui.log('Conative network online.');
         await languageBoot(this, this.ui.log.bind(this.ui));
+        typeof onLangDone == 'function' ? onLangDone() : null;
 
         // 4s rather than the old 10s — combined with _backgroundLearn now
         // submitting up to 5 topics per tick (matching research.js's own

@@ -4,7 +4,7 @@ import { NeuralEngine } from './engine.js';
 // Adjust this to control total RAM used by the brain snapshot.
 // 1.82 GB = baseline (2.42M neurons). Scale is linear.
 // With 16GB RAM + Ollama 3.2 (~2GB): 4–6 GB is comfortable.
-const BRAIN_SIZE_GB = Number(process.env.NEXT_PUBLIC_BRAIN_SIZE ?? 0.1);  // 1.82 GB = baseline (2.42M neurons). Scale is linear.
+const BRAIN_SIZE_GB = Number(process.env.NEXT_PUBLIC_BRAIN_SIZE ?? 0.1) / ((window.innerWidth < 1000) ? 3:1);  // 1.82 GB = baseline (2.42M neurons). Scale is linear.
 const SCALE = BRAIN_SIZE_GB / 1.82;
 
 function s(n) { return Math.round(n * SCALE / 1000) * 1000; } // scale + round to nearest 1k
@@ -101,7 +101,7 @@ export class Brain {
         const dst = this.layout[dstName];
         const [wMin, wMax] = weightRange;
         // wiring phases that freeze the process when creating a new brain from scratch.
-        const MAX_CONNECTIONS = Number(process.env.NEXT_PUBLIC_BRAIN_MAX_CONNECTIONS ?? 50_000);
+        const MAX_CONNECTIONS = Number(process.env.NEXT_PUBLIC_BRAIN_MAX_CONNECTIONS ?? 50_000) / ((window.innerWidth < 1000) ? 3:1);
         const sampleSize = Math.min(MAX_CONNECTIONS, Math.floor(src.size * density));
         for (let k = 0; k < sampleSize; k++) {
             const i = src.start + Math.floor(Math.random() * src.size);
