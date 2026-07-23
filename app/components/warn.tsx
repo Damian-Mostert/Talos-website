@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 
 const ScaryMemoryComponent = () => {
-  const sentences = [
+
+    const sentences = [
     "Fair warning... refreshing kills it — closing the tab kills it.",
     "It's got no memory yet.",
     "Every conversation starts from scratch.",
@@ -74,13 +75,7 @@ const ScaryMemoryComponent = () => {
 
     return () => clearInterval(timer);
   }, [sentences.length]);
-
-  const distanceFromMouse = Math.sqrt(
-    Math.pow(mousePos.x - window.innerWidth / 2, 2) +
-    Math.pow(mousePos.y - window.innerHeight / 2, 2)
-  );
-  const intensity = Math.max(0, 1 - distanceFromMouse / 1000);
-
+  
   return (
     <div ref={containerRef} style={styles.container}>
       <style>{`
@@ -234,7 +229,7 @@ const ScaryMemoryComponent = () => {
 
       {/* Background elements */}
       <div style={styles.bgWarp} className="bg-distort"></div>
-      <div style={{...styles.bgGlow, opacity: intensity * 0.6}}></div>
+      <div style={{...styles.bgGlow, opacity: 1 * 0.6}}></div>
       
       {/* Animated lines */}
       <svg style={styles.svgOverlay} viewBox="0 0 100 100" preserveAspectRatio="none">
@@ -283,7 +278,6 @@ const ScaryMemoryComponent = () => {
             style={{
               ...styles.text,
               ...(!isGlitching && styles.textContent),
-              transform: `perspective(1000px) rotateY(${(mousePos.x - window.innerWidth / 2) * 0.01}deg) rotateX(${-(mousePos.y - window.innerHeight / 2) * 0.01}deg)`,
             }}
           >
             {sentences[currentIndex]}
