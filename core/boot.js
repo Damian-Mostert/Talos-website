@@ -822,7 +822,7 @@ export async function languageBoot(consciousness, log) {
     }
 
     const eng = consciousness.brain.engine;
-    const LANGUAGE_EPOCHS = 6;
+    const LANGUAGE_EPOCHS = 15;
     let total = 0;
 
     for (let epoch = 1; epoch <= LANGUAGE_EPOCHS; epoch++) {
