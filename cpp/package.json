@@ -1,0 +1,78 @@
+{
+  "name": "neuropile",
+  "version": "0.1.0",
+  "description": "A native C++ spiking-neuron brain core with a Node.js API. Regions, neuromodulators, needs, emotion, motor intent, memory, concepts, and neurogenesis - plug a growing brain into anything.",
+  "keywords": [
+    "brain",
+    "neural-network",
+    "spiking",
+    "neuromodulation",
+    "cognitive-architecture",
+    "neuropile",
+    "napi",
+    "native-addon"
+  ],
+  "license": "MIT",
+  "author": {
+    "name": "Damian Mostert",
+    "email": "damianmostert86@gmail.com"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Damian-Mostert/Talos-website.git",
+    "directory": "cpp"
+  },
+  "bugs": {
+    "url": "https://github.com/Damian-Mostert/Talos-website/issues"
+  },
+  "homepage": "https://github.com/Damian-Mostert/Talos-website/tree/main/cpp#readme",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "require": "./index.js",
+      "import": "./index.mjs"
+    },
+    "./talos-brain": {
+      "types": "./index.d.ts",
+      "require": "./index.js",
+      "import": "./index.mjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "index.mjs",
+    "index.d.ts",
+    "lib",
+    "src",
+    "binding.gyp",
+    "scripts",
+    "examples",
+    "LICENSE",
+    "README.md"
+  ],
+  "scripts": {
+    "install": "node-gyp rebuild || node scripts/no-native.js",
+    "build": "node-gyp rebuild",
+    "rebuild": "node-gyp rebuild",
+    "test": "node --test",
+    "test:native": "node --test test/native.test.js",
+    "example:chat": "node examples/chat.js",
+    "example:game": "node examples/game-loop.js",
+    "example:http": "node examples/http-server.js",
+    "example:growth": "node examples/growth.js",
+    "benchmark": "node examples/benchmark.js"
+  },
+  "dependencies": {
+    "node-addon-api": "^8.0.0"
+  },
+  "devDependencies": {
+    "node-gyp": "^11.0.0"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "gypfile": true
+}
