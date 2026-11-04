@@ -6,7 +6,10 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "publish:neuropile": "node scripts/publish-neuropile.js",
+    "build:neuropile": "npm run build --prefix cpp",
+    "test:neuropile": "npm test --prefix cpp"
   },
   "dependencies": {
     "next": "16.2.10",
